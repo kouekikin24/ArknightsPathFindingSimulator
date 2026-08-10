@@ -1,0 +1,117 @@
+import java.util.HashSet;
+import java.util.Set;
+
+/** Runtime state kept separate from route and unit configuration. */
+public final class UnitState {
+    private Vec2f entityPosition;
+    private Vec2f cursorPosition;
+    private Vec2f inertiaVelocity = Vec2f.ZERO;
+    private Vec2f cachedAvoidance = Vec2f.ZERO;
+    private UnitMode mode = UnitMode.MOVE;
+    private boolean bound;
+    private int lastAvoidanceFrame = Integer.MIN_VALUE;
+    private final RouteProgress routeProgress = new RouteProgress();
+    private final Set<TileCoord> passedTileCenters = new HashSet<>();
+    private TileCoord previousCursorTile;
+    private TileCoord visitGoalTile;
+    private int alertsShown;
+
+    public UnitState(Route route, UnitConfig config) {
+        cursorPosition = route.spawnCursorPosition();
+        entityPosition = cursorPosition.add(config.spawnEntityOffset());
+    }
+
+    public Vec2f entityPosition() {
+        return entityPosition;
+    }
+
+    public Vec2f cursorPosition() {
+        return cursorPosition;
+    }
+
+    public Vec2f inertiaVelocity() {
+        return inertiaVelocity;
+    }
+
+    public Vec2f cachedAvoidance() {
+        return cachedAvoidance;
+    }
+
+    public UnitMode mode() {
+        return mode;
+    }
+
+    public boolean bound() {
+        return bound;
+    }
+
+    public int lastAvoidanceFrame() {
+        return lastAvoidanceFrame;
+    }
+
+    public RouteProgress routeProgress() {
+        return routeProgress;
+    }
+
+    public TileCoord previousCursorTile() {
+        return previousCursorTile;
+    }
+
+    public TileCoord visitGoalTile() {
+        return visitGoalTile;
+    }
+
+    public Set<TileCoord> passedTileCenters() {
+        return passedTileCenters;
+    }
+
+    public int alertsShown() {
+        return alertsShown;
+    }
+
+    public Vec2f footPosition(UnitConfig config) {
+        return entityPosition.add(config.footOffset());
+    }
+
+    public void setMode(UnitMode mode) {
+        this.mode = mode;
+    }
+
+    public void setBound(boolean bound) {
+        this.bound = bound;
+    }
+
+    public void setInertiaVelocity(Vec2f inertiaVelocity) {
+        this.inertiaVelocity = inertiaVelocity;
+    }
+
+    public void setCachedAvoidance(Vec2f cachedAvoidance, int frame) {
+        this.cachedAvoidance = cachedAvoidance;
+        this.lastAvoidanceFrame = frame;
+    }
+
+    /** Translate entity and cursor together so their fixed spawn offset remains invariant. */
+    public void translate(Vec2f delta) {
+        entityPosition = entityPosition.add(delta);
+        cursorPosition = cursorPosition.add(delta);
+    }
+
+    /** Set the cursor to a route point while retaining its fixed offset from the entity. */
+    public void relocateCursor(Vec2f newCursorPosition) {
+        translate(newCursorPosition.subtract(cursorPosition));
+    }
+
+    public void setPreviousCursorTile(TileCoord previousCursorTile) {
+        this.previousCursorTile = previousCursorTile;
+    }
+
+    public void resetVisitState(TileCoord goalTile) {
+        visitGoalTile = goalTile;
+        previousCursorTile = null;
+        passedTileCenters.clear();
+    }
+
+    public void alertShown() {
+        alertsShown++;
+    }
+}
