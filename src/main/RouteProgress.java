@@ -17,7 +17,9 @@ public final class RouteProgress {
     }
 
     public Checkpoint current(Route route) {
-        return checkpointIndex < route.checkpoints().size() ? route.checkpoints().get(checkpointIndex) : null;
+        return !completed && checkpointIndex < route.checkpoints().size()
+                ? route.checkpoints().get(checkpointIndex)
+                : null;
     }
 
     public void enterAt(StageClock clock) {
@@ -25,20 +27,23 @@ public final class RouteProgress {
     }
 
     /**
-     * Patrol routes return to the first checkpoint after a terminal patrol
-     * move whose target differs from the first target. All other routes
-     * advance toward the endpoint.
+     * Confirmed article rule, not a general patrol convention: a terminal
+     * patrol move returns to checkpoint zero only when its target differs
+     * from the first checkpoint target. All other routes advance to endpoint.
      */
-    public void advance(Route route, StageClock clock) {
+    public boolean advance(Route route, StageClock clock) {
         Checkpoint current = current(route);
         if (current != null && current.type() == CheckpointType.PATROL_MOVE
                 && checkpointIndex == route.checkpoints().size() - 1
-                && !current.point().equals(route.checkpoints().getFirst().point())) {
+                && route.hasTerminalPatrolLoop()) {
             checkpointIndex = 0;
+            enteredPlayTime = clock.playTime();
+            return true;
         } else {
             checkpointIndex++;
         }
         enteredPlayTime = clock.playTime();
+        return false;
     }
 
     public void markCompleted() {

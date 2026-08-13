@@ -12,8 +12,17 @@ public record UnitConfig(
         boolean visitEveryNodeStably) {
 
     public UnitConfig {
-        if (moveMultiplier < 0f || steeringFactor < 0f || maxSteeringForce < 0f || halfBodyWidth < 0f) {
+        if (!Float.isFinite(attributeSpeed) || !Float.isFinite(moveMultiplier)
+                || !Float.isFinite(steeringFactor) || !Float.isFinite(maxSteeringForce)
+                || !Float.isFinite(halfBodyWidth)) {
+            throw new IllegalArgumentException("Movement scalars must be finite");
+        }
+        if (attributeSpeed < 0f || moveMultiplier < 0f || steeringFactor < 0f
+                || maxSteeringForce < 0f || halfBodyWidth < 0f) {
             throw new IllegalArgumentException("Movement scalars cannot be negative");
+        }
+        if (!finite(spawnEntityOffset) || !finite(footOffset)) {
+            throw new IllegalArgumentException("Movement offsets must be finite");
         }
     }
 
@@ -31,5 +40,9 @@ public record UnitConfig(
 
     public float theoreticalSpeed() {
         return F32.max(attributeSpeed, 0.1f) * moveMultiplier;
+    }
+
+    private static boolean finite(Vec2f value) {
+        return value != null && Float.isFinite(value.x()) && Float.isFinite(value.y());
     }
 }

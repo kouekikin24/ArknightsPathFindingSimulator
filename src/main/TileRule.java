@@ -19,6 +19,11 @@ public record TileRule(
     public static final float BOX_COST = 1_000f;
     public static final float PIT_COST = 1_000_000f;
 
+    public TileRule {
+        requirePositiveCost(groundEntryCost, "groundEntryCost");
+        requirePositiveCost(flyingEntryCost, "flyingEntryCost");
+    }
+
     public static TileRule open() {
         return new TileRule(true, true, NORMAL_COST, NORMAL_COST,
                 false, false, false, false, false, false);
@@ -53,5 +58,11 @@ public record TileRule(
 
     public boolean collisionBlocked(MovementMode mode) {
         return mode == MovementMode.GROUND ? groundCollisionBlocked : flyingCollisionBlocked;
+    }
+
+    private static void requirePositiveCost(float value, String name) {
+        if (Float.isNaN(value) || value <= 0f) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
     }
 }

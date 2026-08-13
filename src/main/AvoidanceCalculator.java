@@ -73,6 +73,7 @@ public final class AvoidanceCalculator {
                 }
             }
         }
+        // The documented 8-neighbor result is normalized before its given-direction projection.
         return sum.normalized();
     }
 }

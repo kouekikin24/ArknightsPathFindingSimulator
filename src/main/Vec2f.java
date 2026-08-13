@@ -1,6 +1,7 @@
 /** Logical map-space vector. X grows right; Y grows down. */
 public record Vec2f(float x, float y) {
     public static final Vec2f ZERO = new Vec2f(0f, 0f);
+    private static final float UNITY_NORMALIZATION_EPSILON = 0.00001f;
 
     public Vec2f add(Vec2f other) {
         return new Vec2f(x + other.x, y + other.y);
@@ -40,12 +41,21 @@ public record Vec2f(float x, float y) {
 
     public Vec2f normalized() {
         float length = length();
-        return length <= F32.EPSILON ? ZERO : multiply(1f / length);
+        // Match Unity Vector2.normalized: test magnitude first, then divide each component.
+        return length > UNITY_NORMALIZATION_EPSILON
+                ? new Vec2f(x / length, y / length)
+                : ZERO;
     }
 
     public Vec2f clampMagnitude(float maximum) {
-        float length = length();
-        return length > maximum && length > F32.EPSILON ? multiply(maximum / length) : this;
+        float maximumSquared = maximum * maximum;
+        if (lengthSquared() <= maximumSquared) {
+            return this;
+        }
+        float magnitude = length();
+        // Unity Vector2.ClampMagnitude divides the stored components directly
+        // after its squared-magnitude comparison.
+        return new Vec2f(x / magnitude * maximum, y / magnitude * maximum);
     }
 
     public Vec2f projectOnto(Vec2f direction) {

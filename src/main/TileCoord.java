@@ -1,4 +1,8 @@
-/** Integer tile coordinates. The center of (x, y) is (x + .5, y + .5). */
+/**
+ * Integer tile coordinates. The center of (x, y) is (x + .5, y + .5).
+ * Tile (x, y) owns the half-open map-space region [x, x + 1) x [y, y + 1),
+ * so positions on an integer grid line belong to the tile on its positive side.
+ */
 public record TileCoord(int x, int y) {
     public static final TileCoord UP = new TileCoord(0, -1);
     public static final TileCoord RIGHT = new TileCoord(1, 0);
@@ -14,13 +18,10 @@ public record TileCoord(int x, int y) {
         return new Vec2f(x + 0.5f, y + 0.5f);
     }
 
-    /**
-     * Tile centers are half-integers. Centered ties-to-even matches the
-     * article's banker-rounding rule while preserving f32 drift around a grid line.
-     */
+    /** Maps a position to the unique tile whose half-open region contains it. */
     public static TileCoord fromPosition(Vec2f position) {
         return new TileCoord(
-                F32.roundToEven(position.x() - 0.5f),
-                F32.roundToEven(position.y() - 0.5f));
+                (int) Math.floor(position.x()),
+                (int) Math.floor(position.y()));
     }
 }

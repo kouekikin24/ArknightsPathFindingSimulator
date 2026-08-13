@@ -11,10 +11,23 @@ public record Checkpoint(
         int area) {
 
     public Checkpoint {
-        if (type.isMovement() || type == CheckpointType.APPEAR_AT_POS) {
-            if (point == null) {
-                throw new IllegalArgumentException(type + " requires a point");
-            }
+        if (type == null) {
+            throw new IllegalArgumentException("Checkpoint type is required");
+        }
+        if (point != null && !finite(point)) {
+            throw new IllegalArgumentException("Checkpoint point must be finite");
+        }
+        if ((type.isMovement() || type == CheckpointType.APPEAR_AT_POS) && point == null) {
+            throw new IllegalArgumentException(type + " requires a point");
+        }
+        if (!Float.isFinite(radius) || radius < 0f) {
+            throw new IllegalArgumentException("Checkpoint radius must be finite and non-negative");
+        }
+        if (!Float.isFinite(value) || value < 0f) {
+            throw new IllegalArgumentException("Checkpoint value must be finite and non-negative");
+        }
+        if (area < 0) {
+            throw new IllegalArgumentException("Checkpoint area must be non-negative");
         }
     }
 
@@ -60,5 +73,9 @@ public record Checkpoint(
 
     public static Checkpoint waitForBossRushArea(int area) {
         return new Checkpoint(CheckpointType.WAIT_BOSSRUSH_WAVE, null, 0f, 0f, area);
+    }
+
+    private static boolean finite(Vec2f value) {
+        return Float.isFinite(value.x()) && Float.isFinite(value.y());
     }
 }

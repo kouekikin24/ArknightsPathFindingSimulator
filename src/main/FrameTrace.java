@@ -1,6 +1,7 @@
 /** A complete enough per-frame audit record to compare against game recordings. */
 public record FrameTrace(
         int frame,
+        long globalFrame,
         int checkpointIndex,
         CheckpointType checkpointType,
         UnitMode modeBefore,

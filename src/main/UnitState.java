@@ -9,11 +9,13 @@ public final class UnitState {
     private Vec2f cachedAvoidance = Vec2f.ZERO;
     private UnitMode mode = UnitMode.MOVE;
     private boolean bound;
-    private int lastAvoidanceFrame = Integer.MIN_VALUE;
+    private long lastAvoidanceFrame = Long.MIN_VALUE;
     private final RouteProgress routeProgress = new RouteProgress();
     private final Set<TileCoord> passedTileCenters = new HashSet<>();
-    private TileCoord previousCursorTile;
+    private TileCoord lastObservedCursorTile;
+    private TileCoord previousDistinctCursorTile;
     private TileCoord visitGoalTile;
+    private int visitGoalCheckpointIndex = -1;
     private int alertsShown;
 
     public UnitState(Route route, UnitConfig config) {
@@ -45,7 +47,7 @@ public final class UnitState {
         return bound;
     }
 
-    public int lastAvoidanceFrame() {
+    public long lastAvoidanceFrame() {
         return lastAvoidanceFrame;
     }
 
@@ -53,12 +55,8 @@ public final class UnitState {
         return routeProgress;
     }
 
-    public TileCoord previousCursorTile() {
-        return previousCursorTile;
-    }
-
-    public TileCoord visitGoalTile() {
-        return visitGoalTile;
+    public TileCoord previousDistinctCursorTile() {
+        return previousDistinctCursorTile;
     }
 
     public Set<TileCoord> passedTileCenters() {
@@ -85,7 +83,7 @@ public final class UnitState {
         this.inertiaVelocity = inertiaVelocity;
     }
 
-    public void setCachedAvoidance(Vec2f cachedAvoidance, int frame) {
+    public void setCachedAvoidance(Vec2f cachedAvoidance, long frame) {
         this.cachedAvoidance = cachedAvoidance;
         this.lastAvoidanceFrame = frame;
     }
@@ -101,13 +99,26 @@ public final class UnitState {
         translate(newCursorPosition.subtract(cursorPosition));
     }
 
-    public void setPreviousCursorTile(TileCoord previousCursorTile) {
-        this.previousCursorTile = previousCursorTile;
+    /** Records a cursor tile only when it changes, preserving the prior distinct tile. */
+    public void observeCursorTile(TileCoord cursorTile) {
+        if (lastObservedCursorTile == null) {
+            lastObservedCursorTile = cursorTile;
+        } else if (!lastObservedCursorTile.equals(cursorTile)) {
+            previousDistinctCursorTile = lastObservedCursorTile;
+            lastObservedCursorTile = cursorTile;
+        }
     }
 
-    public void resetVisitState(TileCoord goalTile) {
+    public boolean visitStateMatches(TileCoord goalTile, int checkpointIndex) {
+        return goalTile.equals(visitGoalTile) && checkpointIndex == visitGoalCheckpointIndex;
+    }
+
+    /** Resets center-visit history whenever the route target changes, even in the same tile. */
+    public void resetVisitState(TileCoord goalTile, int checkpointIndex) {
         visitGoalTile = goalTile;
-        previousCursorTile = null;
+        visitGoalCheckpointIndex = checkpointIndex;
+        lastObservedCursorTile = null;
+        previousDistinctCursorTile = null;
         passedTileCenters.clear();
     }
 

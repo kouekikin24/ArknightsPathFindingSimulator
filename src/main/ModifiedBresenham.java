@@ -55,6 +55,11 @@ public final class ModifiedBresenham {
         }
     }
 
+    /**
+     * Confirmed article rule: when either axis spans one tile, every tile in
+     * the complete 2xN/Nx2 narrow band is checked. This deliberately remains
+     * distinct from a conventional Bresenham corridor or a smaller heuristic.
+     */
     private static boolean wholeNarrowBandClear(GridMap map, MovementMode mode, TileCoord start, TileCoord end) {
         int minX = Math.min(start.x(), end.x());
         int maxX = Math.max(start.x(), end.x());

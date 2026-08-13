@@ -1,12 +1,9 @@
-import java.util.Arrays;
-
 /** Immutable navigation result for one target tile and movement mode. */
 public final class PathMap {
     private final GridMap map;
     private final TileCoord target;
     private final MovementMode movementMode;
     private final float[] targetDistances;
-    private final float[] distancesToEnd;
     private final int[] rawNextIndices;
     private final int[] nextIndices;
 
@@ -15,11 +12,9 @@ public final class PathMap {
         this.map = map;
         this.target = target;
         this.movementMode = movementMode;
-        this.targetDistances = targetDistances;
-        this.rawNextIndices = rawNextIndices;
-        this.nextIndices = nextIndices;
-        this.distancesToEnd = new float[targetDistances.length];
-        Arrays.fill(this.distancesToEnd, Float.POSITIVE_INFINITY);
+        this.targetDistances = targetDistances.clone();
+        this.rawNextIndices = rawNextIndices.clone();
+        this.nextIndices = nextIndices.clone();
     }
 
     public TileCoord target() {
@@ -34,10 +29,6 @@ public final class PathMap {
         return targetDistances[map.index(coordinate)];
     }
 
-    public float distanceToEnd(TileCoord coordinate) {
-        return distancesToEnd[map.index(coordinate)];
-    }
-
     public boolean reachable(TileCoord coordinate) {
         return map.contains(coordinate) && !Float.isInfinite(distanceToTarget(coordinate));
     }
@@ -50,10 +41,6 @@ public final class PathMap {
     public TileCoord rawNextNode(TileCoord coordinate) {
         int next = rawNextIndices[map.index(coordinate)];
         return next < 0 ? null : map.coordinate(next);
-    }
-
-    void setDistanceToEnd(TileCoord coordinate, float value) {
-        distancesToEnd[map.index(coordinate)] = value;
     }
 
     int[] copyNextIndices() {

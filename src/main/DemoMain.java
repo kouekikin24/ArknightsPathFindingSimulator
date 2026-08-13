@@ -17,8 +17,10 @@ public final class DemoMain {
                 false);
         PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
 
-        for (int i = 0; i < 240 && simulator.unit().mode() != UnitMode.COMPLETED; i++) {
-            FrameTrace trace = simulator.tick();
+        for (long globalFrame = 0L;
+             globalFrame < 240L && simulator.unit().mode() != UnitMode.COMPLETED;
+             globalFrame++) {
+            FrameTrace trace = simulator.tick(globalFrame);
             if (trace.frame() < 5 || !trace.transition().isEmpty() || trace.frame() % 30 == 0) {
                 System.out.printf(
                         "frame=%d cp=%d pos=(%.7f,%.7f) velocity=(%.7f,%.7f) transition=%s%n",

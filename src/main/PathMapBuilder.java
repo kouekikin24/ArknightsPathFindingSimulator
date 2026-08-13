@@ -35,7 +35,9 @@ public final class PathMapBuilder {
                 }
 
                 int scannedIndex = map.index(scanned);
-                float candidate = distances[currentIndex] + map.rule(scanned).entryCost(mode);
+                // Reverse traversal follows scanned -> current, so this is the
+                // forward cost of entering current rather than leaving scanned.
+                float candidate = distances[currentIndex] + map.entryCost(current, mode);
                 if (candidate < distances[scannedIndex]) {
                     distances[scannedIndex] = candidate;
                     next[scannedIndex] = currentIndex;
