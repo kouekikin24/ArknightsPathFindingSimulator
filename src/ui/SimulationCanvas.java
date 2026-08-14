@@ -4,11 +4,13 @@ import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Composite;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -21,12 +23,15 @@ import java.util.function.Consumer;
 public final class SimulationCanvas extends JComponent {
     private static final int PADDING = 24;
     private static final double MIN_ZOOM = 0.1d;
+    private static final double MAX_ZOOM_MULTIPLIER = 300d;
     private static final Color BACKGROUND = new Color(234, 240, 235);
     private static final Color GRID_LINE = new Color(191, 204, 196);
     private static final Color PATH = new Color(68, 135, 116);
     private static final Color TRAJECTORY = new Color(198, 57, 46);
     private static final float TRAJECTORY_OPACITY = 1.00f;
-    private static final double TRAJECTORY_HIT_RADIUS = 5d;
+    private static final double TRAJECTORY_HIT_RADIUS = 30d;
+    private static final int HOVER_INVALIDATION_WIDTH = 520;
+    private static final int HOVER_INVALIDATION_HEIGHT = 140;
     private static final Color ENTITY = new Color(222, 89, 64);
     private static final Color CURSOR = new Color(38, 50, 45);
     private static final Color SPAWN = new Color(43, 137, 91);
@@ -38,7 +43,12 @@ public final class SimulationCanvas extends JComponent {
     private List<UiSnapshot> trajectoryStates = List.of();
     private boolean showPath;
     private boolean showTrajectory = true;
+    private boolean browseMode;
     private UiCell lastDraggedCell;
+    private Point mapPanStart;
+    private Point mapPanViewStart;
+    private Point hoverPosition;
+    private UiSnapshot hoverSample;
     private double zoom = 1d;
     private int viewportWidth = 1;
     private int viewportHeight = 1;
@@ -51,22 +61,51 @@ public final class SimulationCanvas extends JComponent {
         setBackground(BACKGROUND);
         setPreferredSize(new Dimension(760, 600));
         setMinimumSize(new Dimension(200, 160));
-        setToolTipText("");
         MouseAdapter pointerHandler = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent event) {
+                if (browseMode && javax.swing.SwingUtilities.isLeftMouseButton(event)) {
+                    beginMapPan(event);
+                    updateHover(event);
+                    return;
+                }
                 lastDraggedCell = null;
                 sendCell(event);
             }
 
             @Override
             public void mouseDragged(MouseEvent event) {
+                if (browseMode && mapPanStart != null) {
+                    panMap(event);
+                    updateHover(event);
+                    return;
+                }
                 sendCell(event);
             }
 
             @Override
             public void mouseReleased(MouseEvent event) {
+                if (mapPanStart != null) {
+                    endMapPan();
+                    updateHover(event);
+                    return;
+                }
                 lastDraggedCell = null;
+            }
+
+            @Override
+            public void mouseMoved(MouseEvent event) {
+                updateHover(event);
+            }
+
+            @Override
+            public void mouseEntered(MouseEvent event) {
+                updateHover(event);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent event) {
+                clearHover();
             }
 
             @Override
@@ -93,12 +132,14 @@ public final class SimulationCanvas extends JComponent {
 
     public void setSnapshot(UiSnapshot value) {
         snapshot = value;
+        refreshHoverSample();
         updatePreferredSize();
         repaint();
     }
 
     public void setTrajectory(List<UiSnapshot> states) {
         trajectoryStates = states == null ? List.of() : List.copyOf(states);
+        refreshHoverSample();
         repaint();
     }
 
@@ -109,7 +150,16 @@ public final class SimulationCanvas extends JComponent {
 
     public void setShowTrajectory(boolean value) {
         showTrajectory = value;
+        refreshHoverSample();
         repaint();
+    }
+
+    /** Enables pixel-for-pixel viewport panning with the primary mouse button. */
+    public void setBrowseMode(boolean value) {
+        browseMode = value;
+        mapPanStart = null;
+        mapPanViewStart = null;
+        setCursor(Cursor.getPredefinedCursor(value ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
     }
 
     /** Called on the EDT after this canvas accepts a new camera zoom. */
@@ -122,7 +172,7 @@ public final class SimulationCanvas extends JComponent {
     }
 
     public double maximumZoom() {
-        return Math.max(1d, Math.max(viewportWidth, viewportHeight));
+        return fitZoom() * MAX_ZOOM_MULTIPLIER;
     }
 
     public double minimumZoom() {
@@ -135,7 +185,12 @@ public final class SimulationCanvas extends JComponent {
         }
         double width = Math.max(1d, viewportWidth - PADDING * 2d);
         double height = Math.max(1d, viewportHeight - PADDING * 2d);
-        return clampZoom(Math.min(width / snapshot.width(), height / snapshot.height()) * 0.92d);
+        return Math.max(MIN_ZOOM, Math.min(width / snapshot.width(), height / snapshot.height()) * 0.92d);
+    }
+
+    /** Zoom relative to the map-fit camera, where 100% means the entire map fits. */
+    public double zoomPercent() {
+        return zoom / fitZoom() * 100d;
     }
 
     public void setViewportSize(int width, int height) {
@@ -186,8 +241,7 @@ public final class SimulationCanvas extends JComponent {
         if (position == null) {
             return;
         }
-        javax.swing.JViewport viewport = (javax.swing.JViewport) javax.swing.SwingUtilities
-                .getAncestorOfClass(javax.swing.JViewport.class, this);
+        javax.swing.JViewport viewport = owningViewport();
         if (viewport == null) {
             requestedViewPosition = position;
             return;
@@ -239,16 +293,8 @@ public final class SimulationCanvas extends JComponent {
 
     @Override
     public String getToolTipText(MouseEvent event) {
-        TrajectoryHit trajectoryHit = trajectoryHitAt(event.getX(), event.getY());
-        if (trajectoryHit != null) {
-            UiSnapshot sample = trajectoryHit.nearestSample();
-            return String.format(Locale.ROOT,
-                    "实际轨迹 帧 %d -> %d；最近采样 帧 %d：位置 (%.4f, %.4f)",
-                    trajectoryHit.startFrame(), trajectoryHit.endFrame(), sample.frame(),
-                    sample.entityPosition().x(), sample.entityPosition().y());
-        }
-        UiCell cell = cellAt(event.getX(), event.getY());
-        return cell == null ? null : "格子 (" + cell.x() + ", " + cell.y() + ")";
+        UiSnapshot sample = nearestTrajectorySampleAt(event.getX(), event.getY());
+        return sample == null ? null : formatHoverPosition(sample);
     }
 
     @Override
@@ -273,6 +319,8 @@ public final class SimulationCanvas extends JComponent {
             }
             drawMarkers(canvas);
             drawUnit(canvas);
+            drawHoverSampleMarker(canvas);
+            drawHoverPosition(canvas);
         } finally {
             canvas.dispose();
         }
@@ -352,48 +400,140 @@ public final class SimulationCanvas extends JComponent {
         }
     }
 
-    private TrajectoryHit trajectoryHitAt(int canvasX, int canvasY) {
-        if (!showTrajectory || trajectoryStates.size() < 2) {
+    private UiSnapshot nearestTrajectorySampleAt(int canvasX, int canvasY) {
+        if (!showTrajectory || trajectoryStates.isEmpty()) {
             return null;
         }
         double bestDistanceSquared = TRAJECTORY_HIT_RADIUS * TRAJECTORY_HIT_RADIUS;
-        TrajectoryHit result = null;
-        for (int index = 1; index < trajectoryStates.size(); index++) {
-            UiSnapshot previous = trajectoryStates.get(index - 1);
-            UiSnapshot current = trajectoryStates.get(index);
-            if (current.trajectoryBreak()) {
-                continue;
-            }
-            double fromX = worldToCanvasXFloat(previous.entityPosition().x());
-            double fromY = worldToCanvasYFloat(previous.entityPosition().y());
-            double toX = worldToCanvasXFloat(current.entityPosition().x());
-            double toY = worldToCanvasYFloat(current.entityPosition().y());
-            double distanceSquared = distanceSquaredToSegment(canvasX, canvasY, fromX, fromY, toX, toY);
+        UiSnapshot result = null;
+        for (UiSnapshot sample : trajectoryStates) {
+            double sampleX = worldToCanvasXFloat(sample.entityPosition().x());
+            double sampleY = worldToCanvasYFloat(sample.entityPosition().y());
+            double distanceSquared = distanceSquared(canvasX, canvasY, sampleX, sampleY);
             if (distanceSquared > bestDistanceSquared) {
                 continue;
             }
-            double previousDistanceSquared = distanceSquared(canvasX, canvasY, fromX, fromY);
-            double currentDistanceSquared = distanceSquared(canvasX, canvasY, toX, toY);
-            result = new TrajectoryHit(previous, current,
-                    previousDistanceSquared <= currentDistanceSquared ? previous : current);
             bestDistanceSquared = distanceSquared;
+            result = sample;
         }
         return result;
     }
 
-    private static double distanceSquaredToSegment(double pointX, double pointY,
-                                                   double fromX, double fromY,
-                                                   double toX, double toY) {
-        double deltaX = toX - fromX;
-        double deltaY = toY - fromY;
-        double lengthSquared = deltaX * deltaX + deltaY * deltaY;
-        if (lengthSquared == 0d) {
-            return distanceSquared(pointX, pointY, fromX, fromY);
+    private void updateHover(MouseEvent event) {
+        Rectangle dirty = hoverInvalidationBounds();
+        hoverPosition = event.getPoint();
+        refreshHoverSample();
+        repaintHover(dirty);
+    }
+
+    private void refreshHoverSample() {
+        hoverSample = hoverPosition == null ? null : nearestTrajectorySampleAt(hoverPosition.x, hoverPosition.y);
+    }
+
+    private void clearHover() {
+        if (hoverPosition == null && hoverSample == null) {
+            return;
         }
-        double projection = ((pointX - fromX) * deltaX + (pointY - fromY) * deltaY) / lengthSquared;
-        double clampedProjection = Math.max(0d, Math.min(1d, projection));
-        return distanceSquared(pointX, pointY,
-                fromX + clampedProjection * deltaX, fromY + clampedProjection * deltaY);
+        Rectangle dirty = hoverInvalidationBounds();
+        hoverPosition = null;
+        hoverSample = null;
+        repaintHover(dirty);
+    }
+
+    /** Invalidates only the label/marker neighbourhood while the viewport is panning. */
+    private void repaintHover(Rectangle previousBounds) {
+        Rectangle currentBounds = hoverInvalidationBounds();
+        Rectangle dirty = previousBounds == null ? currentBounds : new Rectangle(previousBounds);
+        if (dirty == null) {
+            return;
+        }
+        if (currentBounds != null) {
+            dirty.add(currentBounds);
+        }
+        repaint(dirty.x, dirty.y, dirty.width, dirty.height);
+    }
+
+    private Rectangle hoverInvalidationBounds() {
+        if (hoverPosition == null || hoverSample == null) {
+            return null;
+        }
+        return new Rectangle(hoverPosition.x - HOVER_INVALIDATION_WIDTH / 2,
+                hoverPosition.y - HOVER_INVALIDATION_HEIGHT / 2,
+                HOVER_INVALIDATION_WIDTH, HOVER_INVALIDATION_HEIGHT);
+    }
+
+    private void drawHoverPosition(Graphics2D canvas) {
+        if (hoverPosition == null || hoverSample == null) {
+            return;
+        }
+        String text = formatHoverPosition(hoverSample);
+        canvas.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        java.awt.FontMetrics metrics = canvas.getFontMetrics();
+        int padding = 6;
+        int width = metrics.stringWidth(text) + padding * 2;
+        int height = metrics.getHeight() + padding * 2;
+        int left = hoverPosition.x + 12;
+        int top = hoverPosition.y + 12;
+        if (left + width > getWidth() - 2) {
+            left = hoverPosition.x - 12 - width;
+        }
+        if (top + height > getHeight() - 2) {
+            top = hoverPosition.y - 12 - height;
+        }
+        left = Math.max(2, Math.min(left, Math.max(2, getWidth() - width - 2)));
+        top = Math.max(2, Math.min(top, Math.max(2, getHeight() - height - 2)));
+        canvas.setColor(new Color(29, 44, 38, 230));
+        canvas.fillRoundRect(left, top, width, height, 4, 4);
+        canvas.setColor(Color.WHITE);
+        canvas.drawString(text, left + padding, top + padding + metrics.getAscent());
+    }
+
+    /** Marks only the hovered real frame sample without obscuring adjacent trajectory frames. */
+    private void drawHoverSampleMarker(Graphics2D canvas) {
+        if (hoverSample == null) {
+            return;
+        }
+        int x = worldToCanvasX(hoverSample.entityPosition().x());
+        int y = worldToCanvasY(hoverSample.entityPosition().y());
+        canvas.setColor(TRAJECTORY);
+        canvas.fillOval(x - 1, y - 1, 3, 3);
+    }
+
+    private static String formatHoverPosition(UiSnapshot sample) {
+        return String.format(Locale.ROOT, "\u7b2c %d \u5e27\uff1a\u4f4d\u7f6e (%.4f, %.4f)", sample.frame(),
+                sample.entityPosition().x(), sample.entityPosition().y());
+    }
+
+    private void beginMapPan(MouseEvent event) {
+        javax.swing.JViewport viewport = owningViewport();
+        if (viewport == null) {
+            return;
+        }
+        mapPanStart = event.getPoint();
+        mapPanViewStart = viewport.getViewPosition();
+        setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+    }
+
+    private void panMap(MouseEvent event) {
+        javax.swing.JViewport viewport = owningViewport();
+        if (viewport == null || mapPanViewStart == null) {
+            return;
+        }
+        Dimension extent = viewport.getExtentSize();
+        Dimension view = viewport.getViewSize();
+        int maxX = Math.max(0, view.width - extent.width);
+        int maxY = Math.max(0, view.height - extent.height);
+        int deltaX = event.getX() - mapPanStart.x;
+        int deltaY = event.getY() - mapPanStart.y;
+        int nextX = Math.max(0, Math.min(maxX, mapPanViewStart.x - deltaX));
+        int nextY = Math.max(0, Math.min(maxY, mapPanViewStart.y - deltaY));
+        viewport.setViewPosition(new Point(nextX, nextY));
+    }
+
+    private void endMapPan() {
+        mapPanStart = null;
+        mapPanViewStart = null;
+        setCursor(Cursor.getPredefinedCursor(browseMode ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
     }
 
     private static double distanceSquared(double firstX, double firstY, double secondX, double secondY) {
@@ -440,12 +580,16 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private void drawMarkers(Graphics2D canvas) {
-        drawMarker(canvas, snapshot.spawn(), SPAWN, "S", false);
-        drawMarker(canvas, snapshot.endpoint(), ENDPOINT, "E", false);
-        for (int index = 0; index < snapshot.checkpoints().size(); index++) {
-            drawMarker(canvas, snapshot.checkpoints().get(index), CHECKPOINT,
-                    Integer.toString(index + 1), true);
+        // Spawn and checkpoint markers are editing aids.  Once simulation has
+        // advanced, leave the actual entity trajectory unobscured.
+        if (snapshot.frame() == 0) {
+            drawMarker(canvas, snapshot.spawn(), SPAWN, "S", false);
+            for (int index = 0; index < snapshot.checkpoints().size(); index++) {
+                drawMarker(canvas, snapshot.checkpoints().get(index), CHECKPOINT,
+                        Integer.toString(index + 1), true);
+            }
         }
+        drawMarker(canvas, snapshot.endpoint(), ENDPOINT, "E", false);
         if (snapshot.target() != null) {
             int x = worldToCanvasX(snapshot.target().x());
             int y = worldToCanvasY(snapshot.target().y());
@@ -565,11 +709,11 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private double canvasToWorldX(int canvasX) {
-        return (canvasX - PADDING) / zoom;
+        return worldXAtCanvas(canvasX);
     }
 
     private double canvasToWorldY(int canvasY) {
-        return (canvasY - PADDING) / zoom;
+        return worldYAtCanvas(canvasY);
     }
 
     double worldXAtCanvas(double canvasX) {
@@ -597,29 +741,26 @@ public final class SimulationCanvas extends JComponent {
         }
         int width = PADDING * 2 + worldLengthToPixels(snapshot.width());
         int height = PADDING * 2 + worldLengthToPixels(snapshot.height());
-        setPreferredSize(new Dimension(Math.max(1, width), Math.max(1, height)));
-        revalidate();
+        Dimension next = new Dimension(Math.max(1, width), Math.max(1, height));
+        if (!next.equals(getPreferredSize())) {
+            setPreferredSize(next);
+            revalidate();
+        }
     }
 
     private Point viewportViewPosition() {
-        javax.swing.JViewport viewport = (javax.swing.JViewport) javax.swing.SwingUtilities
-                .getAncestorOfClass(javax.swing.JViewport.class, this);
+        javax.swing.JViewport viewport = owningViewport();
         return viewport == null ? new Point() : viewport.getViewPosition();
+    }
+
+    private javax.swing.JViewport owningViewport() {
+        return (javax.swing.JViewport) javax.swing.SwingUtilities
+                .getAncestorOfClass(javax.swing.JViewport.class, this);
     }
 
     private void notifyZoomChanged(double previousZoom) {
         if (Double.compare(previousZoom, zoom) != 0) {
             zoomChangeListener.run();
-        }
-    }
-
-    private record TrajectoryHit(UiSnapshot start, UiSnapshot end, UiSnapshot nearestSample) {
-        int startFrame() {
-            return start.frame();
-        }
-
-        int endFrame() {
-            return end.frame();
         }
     }
 

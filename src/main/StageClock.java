@@ -1,20 +1,25 @@
 /** External stage clock values consumed by time- and area-based checkpoints. */
 public final class StageClock {
-    private float playTime;
-    private float fragmentTime;
-    private float waveTime;
+    private long frame;
+    private long fragmentBaseFrame;
+    private long waveBaseFrame;
+    private float playTimeBias;
     private int bossRushArea;
 
+    public long frame() {
+        return frame;
+    }
+
     public float playTime() {
-        return playTime;
+        return playTimeBias + elapsedSeconds(frame);
     }
 
     public float fragmentTime() {
-        return fragmentTime;
+        return elapsedSeconds(frame - fragmentBaseFrame);
     }
 
     public float waveTime() {
-        return waveTime;
+        return elapsedSeconds(frame - waveBaseFrame);
     }
 
     public int bossRushArea() {
@@ -22,24 +27,32 @@ public final class StageClock {
     }
 
     public void tick() {
-        playTime += F32.DT;
-        fragmentTime += F32.DT;
-        waveTime += F32.DT;
+        frame++;
     }
 
     public void setPlayTime(float playTime) {
-        this.playTime = playTime;
+        if (!Float.isFinite(playTime)) {
+            throw new IllegalArgumentException("Play time must be finite");
+        }
+        playTimeBias = playTime - elapsedSeconds(frame);
     }
 
     public void resetFragmentTime() {
-        fragmentTime = 0f;
+        fragmentBaseFrame = frame;
     }
 
     public void resetWaveTime() {
-        waveTime = 0f;
+        waveBaseFrame = frame;
     }
 
     public void setBossRushArea(int bossRushArea) {
+        if (bossRushArea < 0) {
+            throw new IllegalArgumentException("Boss rush area must be non-negative");
+        }
         this.bossRushArea = bossRushArea;
+    }
+
+    private static float elapsedSeconds(long frames) {
+        return frames * F32.DT;
     }
 }

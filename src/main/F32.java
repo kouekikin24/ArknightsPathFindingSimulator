@@ -2,6 +2,7 @@
 public final class F32 {
     public static final float DT = 1f / 30f;
     public static final float EPSILON = 0.000001f;
+    public static final float EPSILON_SQUARED = EPSILON * EPSILON;
 
     private F32() {
     }
@@ -26,12 +27,4 @@ public final class F32 {
         return max(min, min(value, max));
     }
 
-    /** Unity-style ties-to-even rounding of the stored float value. */
-    public static int roundToEven(float value) {
-        return (int) Math.rint(value);
-    }
-
-    public static boolean nearlyZero(float value) {
-        return abs(value) <= EPSILON;
-    }
 }

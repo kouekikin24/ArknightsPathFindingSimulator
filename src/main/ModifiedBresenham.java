@@ -1,7 +1,8 @@
 /**
- * The line test used by nextNode smoothing. It is a supercover-style
- * Bresenham variant: a diagonal step checks both unvisited corners of the
- * crossed 2x2 square, and shallow one-tile-wide bands inspect the full band.
+ * The line test used by nextNode smoothing. It is stricter than textbook
+ * supercover: a diagonal step rejects either blocked corner, and a span of one
+ * tile on either axis checks the complete 2xN or Nx2 narrow band. The narrow
+ * band rule is intentionally discontinuous with the general walk.
  */
 public final class ModifiedBresenham {
     private ModifiedBresenham() {

@@ -1,9 +1,13 @@
+import javax.swing.JScrollPane;
+import javax.swing.RepaintManager;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import java.awt.Color;
+import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
@@ -69,6 +73,11 @@ public final class SimulatorUiMain {
         if (states.size() != 19 || states.get(0).frame() != 0 || states.get(18).frame() != 18) {
             throw new IllegalStateException("Timeline does not contain S[0]..S[n]");
         }
+        UiSnapshot rewind = replay.seekFrame(3);
+        if (rewind.frame() != 3 || replay.generatedStates().size() != 19
+                || replay.generatedStateAtFrame(18) == null) {
+            throw new IllegalStateException("Backward seek discarded confirmed timeline states");
+        }
     }
 
     private static void verifyTimeParsing() {
@@ -108,9 +117,12 @@ public final class SimulatorUiMain {
                 }
                 canvas.setZoom(canvas.fitZoom());
                 assertFitsViewport(canvas, 800, 560);
+                if (Math.abs(canvas.zoomPercent() - 100d) > 0.0001d) {
+                    throw new IllegalStateException("Fit zoom was not reported as 100%");
+                }
                 canvas.setZoom(canvas.maximumZoom());
-                if (canvas.zoom() < Math.max(800, 560)) {
-                    throw new IllegalStateException("Maximum zoom does not cover viewport long edge");
+                if (Math.abs(canvas.zoomPercent() - 30_000d) > 0.0001d) {
+                    throw new IllegalStateException("Maximum zoom was not 30000%");
                 }
                 java.awt.Point normalPoint = canvas.canvasPointForWorld(3.2, 2.2);
                 UiCell normalHit = canvas.cellAt(normalPoint.x, normalPoint.y);
@@ -122,7 +134,9 @@ public final class SimulatorUiMain {
                 }
                 verifyMouseWheelZoom(canvas);
                 verifyZoomAnchor(canvas);
+                verifyBrowsePan(snapshot);
                 verifyTrajectoryTooltip(canvas);
+                verifyHoverInvalidation(snapshot);
                 verifyCanvasPaint(canvas, 800, 560);
                 canvas.setViewportSize(440, 320);
                 canvas.setZoom(canvas.fitZoom());
@@ -168,21 +182,116 @@ public final class SimulatorUiMain {
         }
     }
 
+    private static void verifyBrowsePan(UiSnapshot snapshot) {
+        int[] editCount = {0};
+        SimulationCanvas canvas = new SimulationCanvas(cell -> editCount[0]++);
+        canvas.setSnapshot(snapshot);
+        canvas.setViewportSize(320, 240);
+        canvas.setZoom(100d);
+        JScrollPane scrollPane = new JScrollPane(canvas);
+        scrollPane.setSize(320, 240);
+        scrollPane.doLayout();
+        javax.swing.JViewport viewport = scrollPane.getViewport();
+        viewport.setExtentSize(new Dimension(300, 220));
+        viewport.setViewSize(canvas.getPreferredSize());
+        viewport.setViewPosition(new Point(200, 180));
+        Point initialView = viewport.getViewPosition();
+
+        canvas.setBrowseMode(true);
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L, 0,
+                200, 180, 1, false, MouseEvent.BUTTON1));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
+                MouseEvent.BUTTON1_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
+        Point pannedView = viewport.getViewPosition();
+        if (pannedView.x != initialView.x + 40 || pannedView.y != initialView.y + 30) {
+            throw new IllegalStateException("Browse pan was not pixel-for-pixel viewport movement");
+        }
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                160, 150, 1, false, MouseEvent.BUTTON1));
+        if (editCount[0] != 0) {
+            throw new IllegalStateException("Browse pan invoked an editor action");
+        }
+
+        canvas.setBrowseMode(false);
+        Point editPoint = canvas.canvasPointForWorld(1.5d, 1.5d);
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L, 0,
+                editPoint.x, editPoint.y, 1, false, MouseEvent.BUTTON1));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                editPoint.x, editPoint.y, 1, false, MouseEvent.BUTTON1));
+        if (editCount[0] != 1) {
+            throw new IllegalStateException("Leaving browse mode did not restore map editing");
+        }
+    }
+
     private static void verifyTrajectoryTooltip(SimulationCanvas canvas) {
         UiSnapshot first = tooltipSnapshot(3, new UiPoint(2f, 2f), false);
         UiSnapshot second = tooltipSnapshot(4, new UiPoint(4f, 2f), false);
         canvas.setTrajectory(List.of(first, second));
         canvas.setShowTrajectory(true);
         canvas.setZoom(40d);
-        Point midpoint = canvas.canvasPointForWorld(3d, 2f);
+        Point nearestFirst = canvas.canvasPointForWorld(2.25d, 2f);
         MouseEvent event = new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0L, 0,
-                midpoint.x, midpoint.y, 0, false);
+                nearestFirst.x, nearestFirst.y, 0, false);
         String tooltip = canvas.getToolTipText(event);
-        if (tooltip == null || !tooltip.contains("实际轨迹") || !tooltip.contains("帧 3 -> 4")
-                || !tooltip.contains("位置")) {
-            throw new IllegalStateException("Trajectory hover did not show a real sampled position");
+        if (!"\u7b2c 3 \u5e27\uff1a\u4f4d\u7f6e (2.0000, 2.0000)".equals(tooltip)) {
+            throw new IllegalStateException("Trajectory hover did not show the nearest real sampled position");
         }
+        canvas.dispatchEvent(event);
+        canvas.setSize(800, 560);
+        BufferedImage hoverImage = new BufferedImage(800, 560, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D hoverGraphics = hoverImage.createGraphics();
+        try {
+            canvas.paint(hoverGraphics);
+        } finally {
+            hoverGraphics.dispose();
+        }
+        Point selectedPoint = canvas.canvasPointForWorld(2d, 2d);
+        if (!isTrajectoryRed(hoverImage, selectedPoint.x, selectedPoint.y)) {
+            throw new IllegalStateException("Trajectory hover did not mark the selected real sample");
+        }
+        Point tooFar = canvas.canvasPointForWorld(6d, 2f);
+        MouseEvent farEvent = new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0L, 0,
+                tooFar.x, tooFar.y, 0, false);
+        if (canvas.getToolTipText(farEvent) != null) {
+            throw new IllegalStateException("Trajectory hover showed a sample outside its hit radius");
+        }
+        UiSnapshot portalArrival = tooltipSnapshot(5, new UiPoint(6f, 2f), true);
+        canvas.setTrajectory(List.of(first, portalArrival));
+        Point nearestPortalArrival = canvas.canvasPointForWorld(5.8d, 2f);
+        MouseEvent portalEvent = new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0L, 0,
+                nearestPortalArrival.x, nearestPortalArrival.y, 0, false);
+        if (!"\u7b2c 5 \u5e27\uff1a\u4f4d\u7f6e (6.0000, 2.0000)".equals(canvas.getToolTipText(portalEvent))) {
+            throw new IllegalStateException("Portal hover did not select the real arrival sample");
+        }
+        canvas.setShowTrajectory(false);
+        if (canvas.getToolTipText(portalEvent) != null) {
+            throw new IllegalStateException("Disabled trajectory still showed a hover sample");
+        }
+        canvas.setShowTrajectory(true);
         canvas.setTrajectory(List.of());
+        if (canvas.getToolTipText(portalEvent) != null) {
+            throw new IllegalStateException("Empty trajectory still showed a hover sample");
+        }
+    }
+
+    private static void verifyHoverInvalidation(UiSnapshot snapshot) {
+        SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+        canvas.setSnapshot(snapshot);
+        UiSnapshot first = tooltipSnapshot(3, new UiPoint(2f, 2f), false);
+        UiSnapshot second = tooltipSnapshot(4, new UiPoint(4f, 2f), false);
+        canvas.setTrajectory(List.of(first, second));
+        canvas.setViewportSize(800, 560);
+        canvas.setZoom(1_000d);
+        canvas.setSize(canvas.getPreferredSize());
+        RepaintManager repaintManager = RepaintManager.currentManager(canvas);
+        repaintManager.markCompletelyClean(canvas);
+        Point nearFirst = canvas.canvasPointForWorld(2.01d, 2d);
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_MOVED, 0L, 0,
+                nearFirst.x, nearFirst.y, 0, false));
+        Rectangle dirty = repaintManager.getDirtyRegion(canvas);
+        if (dirty.width > 600 || dirty.height > 180) {
+            throw new IllegalStateException("Hover movement invalidated the full high-zoom map");
+        }
     }
 
     private static void verifyPortalTrajectoryBreak() {

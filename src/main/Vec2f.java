@@ -60,7 +60,7 @@ public record Vec2f(float x, float y) {
 
     public Vec2f projectOnto(Vec2f direction) {
         float denominator = direction.lengthSquared();
-        return denominator <= F32.EPSILON ? ZERO : direction.multiply(dot(direction) / denominator);
+        return denominator <= F32.EPSILON_SQUARED ? ZERO : direction.multiply(dot(direction) / denominator);
     }
 
     public float distanceTo(Vec2f other) {

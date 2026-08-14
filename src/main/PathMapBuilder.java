@@ -58,6 +58,6 @@ public final class PathMapBuilder {
 
         int[] rawNext = next.clone();
         NextNodeSmoother.smooth(map, mode, next, allowDiagonalMove);
-        return new PathMap(map, target, mode, distances, rawNext, next);
+        return new PathMap(map.width(), map.height(), target, mode, distances, rawNext, next);
     }
 }

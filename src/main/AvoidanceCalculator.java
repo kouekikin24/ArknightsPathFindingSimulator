@@ -1,5 +1,8 @@
 /** Implements the documented three-frame obstacle-avoidance calculation. */
 public final class AvoidanceCalculator {
+    /** Current reproduction parameter; no confirmed source for this margin was found. */
+    static final float NEIGHBOUR_INFLUENCE_MARGIN = 0.25f;
+
     private static final TileCoord[] NEAREST_PASSABLE_TIE_ORDER = {
             new TileCoord(0, -1), new TileCoord(1, -1), new TileCoord(1, 0), new TileCoord(1, 1),
             new TileCoord(0, 1), new TileCoord(-1, 1), new TileCoord(-1, 0), new TileCoord(-1, -1)
@@ -7,7 +10,8 @@ public final class AvoidanceCalculator {
 
     public Vec2f calculate(GridMap map, MovementMode mode, UnitConfig config,
                            UnitState unit, Vec2f givenDirection) {
-        TileCoord current = TileCoord.fromPosition(unit.cursorPosition());
+        // Avoidance geometry is based on the entity and its foot, not the route cursor.
+        TileCoord current = TileCoord.fromPosition(unit.entityPosition());
         if (!map.contains(current)) {
             return Vec2f.ZERO;
         }
@@ -59,7 +63,7 @@ public final class AvoidanceCalculator {
                         .multiplyComponents(relative)
                         .max(Vec2f.ZERO);
                 Vec2f effectiveOffset = positiveTowardObstacle
-                        .subtract(new Vec2f(0.25f, 0.25f))
+                        .subtract(new Vec2f(NEIGHBOUR_INFLUENCE_MARGIN, NEIGHBOUR_INFLUENCE_MARGIN))
                         .multiplyComponents(relative.abs());
 
                 boolean cardinal = relativeX == 0 || relativeY == 0;

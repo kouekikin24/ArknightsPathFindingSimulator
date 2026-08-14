@@ -42,16 +42,3 @@ public record UiSnapshot(
         return terrain.get(cell.y() * width + cell.x());
     }
 }
-
-record UiPoint(float x, float y) {
-    static final UiPoint ZERO = new UiPoint(0f, 0f);
-}
-
-record UiCell(int x, int y) {
-    UiPoint center() {
-        return new UiPoint(x + 0.5f, y + 0.5f);
-    }
-}
-
-record UiPathSegment(UiCell from, UiCell to) {
-}

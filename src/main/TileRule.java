@@ -35,6 +35,15 @@ public record TileRule(
                 true, false, true, false, false, false);
     }
 
+    public static TileRule box() {
+        return costlyObstacle(BOX_COST);
+    }
+
+    /** A pit is costly ground, not ground-impassable terrain. */
+    public static TileRule pit() {
+        return costlyObstacle(PIT_COST);
+    }
+
     public static TileRule impassable() {
         return new TileRule(false, false, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY,
                 true, true, true, true, true, true);

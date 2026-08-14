@@ -11,7 +11,7 @@ import java.util.function.Consumer;
  */
 public final class PathfindingSimulator {
     public static final int DEFAULT_TRACE_CAPACITY = 10_000;
-    private static final float ENDPOINT_RADIUS = 0.05f;
+    public static final float ENDPOINT_RADIUS = Checkpoint.DEFAULT_MOVE_RADIUS;
 
     private final GridMap map;
     private final Route route;
@@ -60,7 +60,6 @@ public final class PathfindingSimulator {
         this.unit = new UnitState(route, config);
         this.routeGoals = collectRouteGoals();
         activateCurrentCheckpoint();
-        ensureRouteDistancesCurrent();
     }
 
     public UnitState unit() {
@@ -100,6 +99,12 @@ public final class PathfindingSimulator {
         return pathMapForGoal(goalIndex);
     }
 
+    public boolean checkpointOwnsPathMap(int checkpointIndex) {
+        return checkpointIndex >= 0
+                && checkpointIndex < route.checkpoints().size()
+                && routeGoalIndexForCheckpoint(checkpointIndex) >= 0;
+    }
+
     public float remainingRouteDistanceForCheckpoint(int checkpointIndex, TileCoord coordinate) {
         return remainingDistanceForGoal(routeGoalIndexForCheckpoint(checkpointIndex), coordinate);
     }
@@ -119,7 +124,6 @@ public final class PathfindingSimulator {
 
     public FrameTrace tick(long globalFrame) {
         validateGlobalFrame(globalFrame);
-        ensureRouteDistancesCurrent();
 
         Vec2f entityBefore = unit.entityPosition();
         Vec2f cursorBefore = unit.cursorPosition();
@@ -128,22 +132,22 @@ public final class PathfindingSimulator {
         Checkpoint checkpointBefore = unit.routeProgress().current(route);
         int checkpointIndexBefore = unit.routeProgress().checkpointIndex();
         TileCoord cursorTile = TileCoord.fromPosition(cursorBefore);
-        Navigation navigation = resolveFrameNavigation(checkpointBefore, cursorTile);
+        boolean outsideMap = !map.contains(cursorTile);
+        Navigation navigation = resolveFrameNavigation(checkpointBefore, cursorTile, outsideMap);
         boolean recomputedAvoidance = refreshAvoidance(globalFrame, navigation);
         Vec2f requestedDisplacement = Vec2f.ZERO;
         Vec2f appliedDisplacement = Vec2f.ZERO;
 
         if (unit.mode() == UnitMode.MOVE) {
-            if (!map.contains(cursorTile)) {
-                appliedDisplacement = moveTowardMapInterior();
-            } else if (navigation.unreachable()) {
+            if (!outsideMap && navigation.unreachable()) {
                 unit.setMode(UnitMode.BLOCKED);
             } else if (!unit.bound() && navigation.target() != null) {
                 MotionIntegrator.MotionResult result = motionIntegrator.integrate(
                         config, unit, navigation.givenDirection());
                 requestedDisplacement = result.requestedDisplacement();
                 CollisionResult collision = collisionResolver.resolve(
-                        map, route.movementMode(), unit, requestedDisplacement, result.velocity());
+                        map, route.movementMode(), unit, requestedDisplacement, result.velocity(),
+                        !outsideMap);
                 appliedDisplacement = collision.appliedDisplacement();
                 unit.setInertiaVelocity(collision.inertiaVelocity());
                 unit.translate(appliedDisplacement);
@@ -191,6 +195,9 @@ public final class PathfindingSimulator {
             throw new IllegalArgumentException("Global frames must be consecutive: expected "
                     + (lastGlobalFrame + 1L) + ", got " + globalFrame);
         }
+        if (frame == Integer.MAX_VALUE) {
+            throw new IllegalStateException("Local audit frame counter would overflow");
+        }
     }
 
     private void retainTrace(FrameTrace frameTrace) {
@@ -204,18 +211,22 @@ public final class PathfindingSimulator {
         }
     }
 
-    private Navigation resolveFrameNavigation(Checkpoint checkpoint, TileCoord cursorTile) {
+    private Navigation resolveFrameNavigation(Checkpoint checkpoint, TileCoord cursorTile,
+                                              boolean outsideMap) {
         if (unit.mode() != UnitMode.MOVE) {
             return Navigation.none();
         }
-        if (!map.contains(cursorTile)) {
-            return new Navigation(null, mapInteriorDirection(), null, null, UnreachableTarget.NONE);
+        if (outsideMap) {
+            Vec2f destination = mapInteriorDestination();
+            return new Navigation(destination,
+                    destination.subtract(unit.cursorPosition()).normalized(),
+                    null, null, UnreachableTarget.NONE);
         }
         return resolveNavigation(checkpoint, cursorTile);
     }
 
     private boolean refreshAvoidance(long globalFrame, Navigation navigation) {
-        if (unit.mode() != UnitMode.MOVE || globalFrame % 3L != 0L) {
+        if (!refreshesAvoidance(unit.mode()) || globalFrame % 3L != 0L) {
             return false;
         }
         unit.setCachedAvoidance(avoidanceCalculator.calculate(
@@ -223,27 +234,18 @@ public final class PathfindingSimulator {
         return true;
     }
 
-    private Vec2f moveTowardMapInterior() {
-        Vec2f cursor = unit.cursorPosition();
-        Vec2f destination = new Vec2f(
-                F32.clamp(cursor.x(), 0.5f, map.width() - 0.5f),
-                F32.clamp(cursor.y(), 0.5f, map.height() - 0.5f));
-        Vec2f toInside = destination.subtract(cursor);
-        if (toInside.length() <= F32.EPSILON) {
-            return Vec2f.ZERO;
-        }
-        float distance = F32.min(config.theoreticalSpeed() * F32.DT, toInside.length());
-        Vec2f delta = toInside.normalized().multiply(distance);
-        unit.translate(delta);
-        return delta;
+    private static boolean refreshesAvoidance(UnitMode mode) {
+        return switch (mode) {
+            case MOVE, STUNNED, DISPLACED -> true;
+            case BLOCKED, VANISHED, COMPLETED -> false;
+        };
     }
 
-    private Vec2f mapInteriorDirection() {
+    private Vec2f mapInteriorDestination() {
         Vec2f cursor = unit.cursorPosition();
-        Vec2f destination = new Vec2f(
+        return new Vec2f(
                 F32.clamp(cursor.x(), 0.5f, map.width() - 0.5f),
                 F32.clamp(cursor.y(), 0.5f, map.height() - 0.5f));
-        return destination.subtract(cursor).normalized();
     }
 
     private Navigation resolveNavigation(Checkpoint checkpoint, TileCoord currentTile) {
@@ -282,13 +284,12 @@ public final class PathfindingSimulator {
                                    TileCoord targetTile, Vec2f defaultTarget) {
         boolean tileCenter = config.visitEveryTileCenter();
         boolean nodeCenter = !tileCenter && config.visitEveryNodeCenter();
-        boolean stableNode = !tileCenter && !nodeCenter
-                && (config.visitEveryNodeStably() || route.hasNoCheckpoints());
+        boolean stableNode = !tileCenter && !nodeCenter && config.visitEveryNodeStably();
         if (!tileCenter && !nodeCenter && !stableNode) {
             return defaultTarget;
         }
 
-        float radius = stableNode ? 0.25f : 0.05f;
+        float radius = stableNode ? 0.25f : Checkpoint.DEFAULT_MOVE_RADIUS;
         if (unit.cursorPosition().distanceTo(currentTile.center()) <= radius) {
             unit.passedTileCenters().add(currentTile);
         }
@@ -336,7 +337,8 @@ public final class PathfindingSimulator {
             }
         }
 
-        boolean canCompleteEndpoint = !route.visitEveryCheckpoint() || unit.routeProgress().current(route) == null;
+        boolean canCompleteEndpoint = unit.mode() != UnitMode.VANISHED
+                && (!route.visitEveryCheckpoint() || unit.routeProgress().current(route) == null);
         if (canCompleteEndpoint && unit.cursorPosition().distanceTo(route.endpoint()) <= ENDPOINT_RADIUS) {
             unit.routeProgress().markCompleted();
             unit.setMode(UnitMode.COMPLETED);
@@ -425,7 +427,7 @@ public final class PathfindingSimulator {
     }
 
     private void ensureRouteDistancesCurrent() {
-        if (preparedRouteDistanceMapVersion == map.version()) {
+        if (remainingDistances != null && preparedRouteDistanceMapVersion == map.version()) {
             return;
         }
         List<float[]> rebuilt = new ArrayList<>(routeGoals.size());

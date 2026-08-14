@@ -1,4 +1,6 @@
 import java.util.ArrayList;
+import java.util.AbstractList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -7,6 +9,7 @@ import java.util.List;
  */
 public final class SimulationSession {
     private static final int MINIMUM_DIMENSION = 2;
+    private static final int REPLAY_CHUNK_FRAMES = 240;
 
     private int width;
     private int height;
@@ -23,20 +26,31 @@ public final class SimulationSession {
     private PathfindingSimulator simulator;
     private FrameTrace lastTrace;
     /** Deterministic UI playback states. Index n is exactly S[n]. */
-    private final List<UiSnapshot> timeline = new ArrayList<>();
-    /** Atomically published immutable view for EDT/read-only playback queries. */
-    private volatile List<UiSnapshot> publishedTimeline = List.of();
+    /** Immutable timeline state atomically published to EDT readers. */
+    private volatile Timeline timeline = Timeline.EMPTY;
     /** The first confirmed terminal state, or -1 while the route is live. */
     private volatile int terminalFrame = -1;
     private boolean trajectoryBreak;
     private volatile long scenarioRevision;
-    /** Invalidates in-flight local replays whenever the live playback changes. */
-    private long playbackRevision;
     /**
      * UI playback owns the external phase clock passed to the core. Rebuilding a
      * scenario starts a new playback, so its first simulated frame is always 0.
      */
     private long globalFrame;
+
+    private List<UiTerrain> cachedTerrainView;
+    private List<UiPoint> cachedCheckpointPoints;
+    private PathMap cachedSegmentSource;
+    private List<UiPathSegment> cachedSegments = List.of();
+
+    /** Signals a normal attempt to advance beyond a confirmed terminal frame. */
+    public static final class TerminalStateException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        TerminalStateException(String message) {
+            super(message);
+        }
+    }
 
     public SimulationSession() {
         loadDemoScenario();
@@ -144,41 +158,46 @@ public final class SimulationSession {
         return snapshot();
     }
 
+    public synchronized boolean canTick() {
+        return terminalFrame < 0 || simulator.frame() < terminalFrame;
+    }
+
     public synchronized UiSnapshot tick() {
-        if (terminalFrame >= 0 && simulator.frame() >= terminalFrame) {
-            throw new IllegalStateException("Simulation is terminal at frame " + terminalFrame
+        if (!canTick()) {
+            throw new TerminalStateException("Simulation is terminal at frame " + terminalFrame
                     + "; future frames are not defined");
         }
+        advanceOneFrame();
+        UiSnapshot result = snapshot();
+        int frame = result.frame();
+        Timeline current = timeline;
+        if (frame == current.size()) {
+            timeline = current.append(result);
+        } else if (frame < current.size()) {
+            timeline = current.replace(frame, result);
+        } else {
+            throw new IllegalStateException("Timeline gap before frame " + frame);
+        }
+        if (isTerminalMode(simulator.unit().mode())) {
+            terminalFrame = frame;
+        }
+        return result;
+    }
+
+    /** Advance only core state and snapshot dependencies, without allocating a snapshot. */
+    private void advanceOneFrame() {
         // Keep the externally supplied phase exactly aligned with S[n] -> S[n+1].
         if (globalFrame != simulator.frame()) {
             throw new IllegalStateException("Simulation frame drift: expected global frame "
                     + simulator.frame() + ", got " + globalFrame);
         }
         lastTrace = simulator.tick(globalFrame++);
-        UiSnapshot result = snapshot();
-        UiSnapshot previous = result.frame() > 0 && result.frame() - 1 < timeline.size()
-                ? timeline.get(result.frame() - 1)
+        int frame = simulator.frame();
+        Timeline current = timeline;
+        UiSnapshot previous = frame > 0 && frame - 1 < current.size()
+                ? current.get(frame - 1)
                 : null;
         trajectoryBreak = isTrajectoryBreak(lastTrace, previous);
-        // Rebuild the snapshot with the break marker computed from this exact pair
-        // of consecutive states. No route geometry is involved in this decision.
-        result = snapshot();
-        // A seek back truncates/replaces the future before the next normal tick.
-        while (timeline.size() > result.frame() + 1) {
-            timeline.remove(timeline.size() - 1);
-        }
-        if (result.frame() == timeline.size()) {
-            timeline.add(result);
-        } else if (result.frame() < timeline.size()) {
-            timeline.set(result.frame(), result);
-        } else {
-            throw new IllegalStateException("Timeline gap before frame " + result.frame());
-        }
-        publishTimeline();
-        if (isTerminalMode(simulator.unit().mode())) {
-            terminalFrame = result.frame();
-        }
-        return result;
     }
 
     public synchronized UiSnapshot snapshot() {
@@ -221,37 +240,47 @@ public final class SimulationSession {
      * seek rebuilds the mutable simulator and replays from S[0], never using the
      * simulator's finite trace ring as the timeline source.
      */
-    public synchronized UiSnapshot seekFrame(long targetFrame) {
+    public UiSnapshot seekFrame(long targetFrame) {
         if (targetFrame < 0L || targetFrame > Integer.MAX_VALUE - 1L) {
             throw new IllegalArgumentException("Frame must be between 0 and " + (Integer.MAX_VALUE - 1L));
         }
-        ensureTimelineInitialized();
         int target = (int) targetFrame;
-        rejectBeyondTerminal(target);
-        int current = simulator.frame();
-        if (target < current) {
-            rebuildSimulator(false);
-            while (simulator.frame() < target) {
-                checkReplayInterrupted();
-                rejectBeyondTerminal(target);
-                tick();
-            }
-            while (timeline.size() > target + 1) {
-                timeline.remove(timeline.size() - 1);
-            }
-            publishTimeline();
-        } else {
-            while (simulator.frame() < target) {
-                checkReplayInterrupted();
-                rejectBeyondTerminal(target);
-                tick();
+        long expectedRevision;
+        synchronized (this) {
+            ensureTimelineInitialized();
+            rejectBeyondTerminal(target);
+            expectedRevision = scenarioRevision;
+            if (target < simulator.frame()) {
+                rebuildSimulator(false);
             }
         }
-        return timeline.get(target);
+
+        while (true) {
+            checkReplayInterrupted();
+            synchronized (this) {
+                if (scenarioRevision != expectedRevision) {
+                    throw new IllegalStateException("Replay request was superseded by a scenario edit");
+                }
+                if (simulator.frame() >= target) {
+                    return timeline.get(target);
+                }
+                int chunkEnd = Math.min(target, simulator.frame() + REPLAY_CHUNK_FRAMES);
+                while (simulator.frame() < chunkEnd) {
+                    checkReplayInterrupted();
+                    if (simulator.frame() + 1 < timeline.size()) {
+                        advanceOneFrame();
+                    } else {
+                        rejectBeyondTerminal(target);
+                        tick();
+                    }
+                }
+            }
+            Thread.yield();
+        }
     }
 
     /** Alias used by UI code that treats the timeline as the playback source. */
-    public synchronized UiSnapshot stateAtFrame(long targetFrame) {
+    public UiSnapshot stateAtFrame(long targetFrame) {
         return seekFrame(targetFrame);
     }
 
@@ -265,7 +294,7 @@ public final class SimulationSession {
             return null;
         }
         int frame = (int) targetFrame;
-        List<UiSnapshot> published = publishedTimeline;
+        Timeline published = timeline;
         return frame < published.size() ? published.get(frame) : null;
     }
 
@@ -286,17 +315,17 @@ public final class SimulationSession {
 
     /** Number of contiguous states currently generated, including S[0]. */
     public int generatedFrameCount() {
-        return publishedTimeline.size();
+        return timeline.size();
     }
 
     /** Highest generated frame index, or 0 for a fresh scenario. */
     public int generatedLastFrame() {
-        return publishedTimeline.size() - 1;
+        return timeline.size() - 1;
     }
 
     /** Immutable copy of all generated states for actual-trajectory rendering. */
     public List<UiSnapshot> generatedStates() {
-        return publishedTimeline;
+        return timeline.asList();
     }
 
     /** Revision increments whenever an edit/reset rebuilds the scenario. */
@@ -331,6 +360,7 @@ public final class SimulationSession {
         lastTrace = null;
         terminalFrame = -1;
         trajectoryBreak = false;
+        invalidateScenarioCaches();
     }
 
     private void rebuildSimulator() {
@@ -368,35 +398,37 @@ public final class SimulationSession {
             terminalFrame = -1;
         }
         trajectoryBreak = false;
+        invalidateScenarioCaches();
         if (isTerminalMode(simulator.unit().mode())) {
             terminalFrame = 0;
         }
         if (resetTimeline) {
             scenarioRevision++;
-            timeline.clear();
-            timeline.add(snapshot());
-            publishTimeline();
+            timeline = Timeline.EMPTY.append(snapshot());
         }
     }
 
     private void ensureTimelineInitialized() {
-        if (timeline.isEmpty()) {
-            timeline.add(snapshot());
-            publishTimeline();
+        if (timeline.size() == 0) {
+            timeline = Timeline.EMPTY.append(snapshot());
             if (isTerminalMode(simulator.unit().mode())) {
                 terminalFrame = 0;
             }
         }
     }
 
-    private void publishTimeline() {
-        publishedTimeline = List.copyOf(timeline);
+    private void invalidateScenarioCaches() {
+        cachedTerrainView = null;
+        cachedCheckpointPoints = null;
+        cachedSegmentSource = null;
+        cachedSegments = List.of();
     }
 
     private PathMap activePathMap() {
         RouteProgress progress = simulator.unit().routeProgress();
         int checkpointIndex = progress.checkpointIndex();
         return !progress.completed() && checkpointIndex < route.checkpoints().size()
+                && simulator.checkpointOwnsPathMap(checkpointIndex)
                 ? simulator.pathMapForCheckpoint(checkpointIndex)
                 : simulator.endpointPathMap();
     }
@@ -412,6 +444,9 @@ public final class SimulationSession {
     }
 
     private List<UiPathSegment> pathSegments(PathMap activePathMap) {
+        if (cachedSegmentSource == activePathMap) {
+            return cachedSegments;
+        }
         List<UiPathSegment> segments = new ArrayList<>();
         MovementMode coreMovementMode = coreMovementMode();
         for (int y = 0; y < height; y++) {
@@ -426,23 +461,27 @@ public final class SimulationSession {
                 }
             }
         }
-        return segments;
+        cachedSegments = List.copyOf(segments);
+        cachedSegmentSource = activePathMap;
+        return cachedSegments;
     }
 
     private List<UiTerrain> terrainView() {
-        List<UiTerrain> result = new ArrayList<>(terrain.length);
-        for (UiTerrain tile : terrain) {
-            result.add(tile);
+        if (cachedTerrainView == null) {
+            cachedTerrainView = List.of(terrain);
         }
-        return result;
+        return cachedTerrainView;
     }
 
     private List<UiPoint> checkpointPoints() {
-        List<UiPoint> result = new ArrayList<>(checkpoints.size());
-        for (UiCell checkpoint : checkpoints) {
-            result.add(checkpoint.center());
+        if (cachedCheckpointPoints == null) {
+            List<UiPoint> result = new ArrayList<>(checkpoints.size());
+            for (UiCell checkpoint : checkpoints) {
+                result.add(checkpoint.center());
+            }
+            cachedCheckpointPoints = List.copyOf(result);
         }
-        return result;
+        return cachedCheckpointPoints;
     }
 
     private boolean isRouteCell(UiCell cell) {
@@ -474,8 +513,8 @@ public final class SimulationSession {
     private static TileRule coreRule(UiTerrain terrain) {
         return switch (terrain) {
             case OPEN -> TileRule.open();
-            case BOX -> TileRule.costlyObstacle(TileRule.BOX_COST);
-            case PIT -> TileRule.costlyObstacle(TileRule.PIT_COST);
+            case BOX -> TileRule.box();
+            case PIT -> TileRule.pit();
             case WALL -> TileRule.impassable();
         };
     }
@@ -548,5 +587,70 @@ public final class SimulationSession {
 
     private static boolean sameFloatBits(float left, float right) {
         return Float.floatToIntBits(left) == Float.floatToIntBits(right);
+    }
+
+    /** Immutable (backing array, visible size) pair published as one reference. */
+    private static final class Timeline {
+        private static final Timeline EMPTY = new Timeline(new UiSnapshot[0], 0);
+        private static final int MINIMUM_CAPACITY = 64;
+
+        private final UiSnapshot[] items;
+        private final int size;
+
+        private Timeline(UiSnapshot[] items, int size) {
+            this.items = items;
+            this.size = size;
+        }
+
+        private int size() {
+            return size;
+        }
+
+        private UiSnapshot get(int index) {
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("Frame " + index + " is not generated");
+            }
+            return items[index];
+        }
+
+        private Timeline append(UiSnapshot value) {
+            UiSnapshot[] target = items;
+            if (size == target.length) {
+                target = Arrays.copyOf(items, Math.max(MINIMUM_CAPACITY, size * 2));
+            }
+            target[size] = value;
+            return new Timeline(target, size + 1);
+        }
+
+        private Timeline replace(int index, UiSnapshot value) {
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("Timeline gap before frame " + index);
+            }
+            if (items[index] == value) {
+                return this;
+            }
+            UiSnapshot[] copy = items.clone();
+            copy[index] = value;
+            return new Timeline(copy, size);
+        }
+
+        private List<UiSnapshot> asList() {
+            UiSnapshot[] source = items;
+            int count = size;
+            return new AbstractList<>() {
+                @Override
+                public UiSnapshot get(int index) {
+                    if (index < 0 || index >= count) {
+                        throw new IndexOutOfBoundsException("Frame " + index + " is not generated");
+                    }
+                    return source[index];
+                }
+
+                @Override
+                public int size() {
+                    return count;
+                }
+            };
+        }
     }
 }

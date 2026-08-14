@@ -1,26 +1,50 @@
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.WeakHashMap;
 
-/** Cache key mirrors the game behavior: map version, movement mode, and target tile. */
+/** Cache of immutable path maps grouped by weakly-held map instance. */
 public final class PathMapCache {
     private final PathMapBuilder builder = new PathMapBuilder();
-    private final Map<Key, PathMap> maps = new HashMap<>();
+    private final Map<GridMap, VersionedMaps> byMap = new WeakHashMap<>();
 
     public PathMap get(GridMap map, TileCoord target, MovementMode mode, boolean allowDiagonalMove) {
+        Objects.requireNonNull(map, "Map is required");
+        Objects.requireNonNull(target, "Target is required");
+        Objects.requireNonNull(mode, "Movement mode is required");
+
         long version = map.version();
-        maps.keySet().removeIf(existing -> existing.map() == map && existing.mapVersion() != version);
-        Key key = new Key(map, version, target, mode, allowDiagonalMove);
-        return maps.computeIfAbsent(key, ignored -> builder.build(map, target, mode, allowDiagonalMove));
+        VersionedMaps versioned = byMap.get(map);
+        if (versioned == null || versioned.version != version) {
+            versioned = new VersionedMaps(version);
+            byMap.put(map, versioned);
+        }
+        return versioned.maps.computeIfAbsent(
+                new Key(target, mode, allowDiagonalMove),
+                ignored -> builder.build(map, target, mode, allowDiagonalMove));
     }
 
     public void clear() {
-        maps.clear();
+        byMap.clear();
     }
 
     int entryCount() {
-        return maps.size();
+        int total = 0;
+        for (VersionedMaps versioned : byMap.values()) {
+            total += versioned.maps.size();
+        }
+        return total;
     }
 
-    private record Key(GridMap map, long mapVersion, TileCoord target, MovementMode mode, boolean allowDiagonalMove) {
+    private static final class VersionedMaps {
+        private final long version;
+        private final Map<Key, PathMap> maps = new HashMap<>();
+
+        private VersionedMaps(long version) {
+            this.version = version;
+        }
+    }
+
+    private record Key(TileCoord target, MovementMode mode, boolean allowDiagonalMove) {
     }
 }

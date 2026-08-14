@@ -1,15 +1,22 @@
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /** Dependency-free executable regression suite for the confirmed simulator rules. */
 public final class SimulatorTests {
     private static int passed;
 
     public static void main(String[] args) {
+        if (args.length == 1 && "--baseline".equals(args[0])) {
+            printBaseline();
+            return;
+        }
         run("tile ownership uses floor for lines and negative positions", SimulatorTests::tileOwnershipUsesFloor);
         run("Unity-style vector normalization and clamp", SimulatorTests::unityVectorOperations);
+        run("projection guard compares squared length to squared tolerance", SimulatorTests::projectionGuardDimension);
         run("avoidance normalizes then removes given-direction projection", SimulatorTests::avoidanceNormalizationAndProjection);
+        run("avoidance derives its current tile from the entity position", SimulatorTests::avoidanceUsesEntityTile);
         run("reverse SPFA charges the entered tile", SimulatorTests::nonUniformSpfaCosts);
         run("modified Bresenham blocks corner cutting", SimulatorTests::modifiedBresenhamCorner);
         run("modified Bresenham checks confirmed narrow bands", SimulatorTests::modifiedBresenhamNarrowBand);
@@ -18,13 +25,17 @@ public final class SimulatorTests {
         run("external global frames control avoidance cadence", SimulatorTests::globalFrameCadence);
         run("bound and outside-map MOVE frames still refresh avoidance", SimulatorTests::boundAndOutsideAvoidanceCadence);
         run("movement uses continuous integration without position snapping", SimulatorTests::movementDoesNotSnap);
+        run("centre-visit policies are explicit opt-in", SimulatorTests::visitPolicyIsOptIn);
+        run("outside-map entry uses the complete movement pipeline", SimulatorTests::outsideMapEntryUsesFullPipeline);
         run("outside-map spawn preserves movement checkpoints", SimulatorTests::outsideMapSpawnPreservesCheckpoints);
         run("unreachable movement checkpoint enters blocked once", SimulatorTests::unreachableMoveBlocks);
         run("unreachable endpoint enters blocked once", SimulatorTests::unreachableEndpointBlocks);
         run("swept collision slides instead of reflecting", SimulatorTests::sweptCollisionSlide);
         run("swept collision handles corners, long sweeps, and bounds", SimulatorTests::sweptCollisionCornerLongSweepAndBounds);
         run("swept collision orders near-simultaneous crossings strictly", SimulatorTests::sweptCollisionUsesStrictCrossingOrder);
+        run("swept collision rejects non-finite and runaway input", SimulatorTests::sweptCollisionInputValidation);
         run("path maps stay immutable and cache evicts only stale map versions", SimulatorTests::pathMapImmutabilityAndCacheEviction);
+        run("path maps are self-contained after construction", SimulatorTests::pathMapIsSelfContained);
         run("route-owned distances separate same tile goals and refresh on map change", SimulatorTests::routeOwnedDistances);
         run("invalid disappear paths are rejected", SimulatorTests::invalidDisappearPaths);
         run("cursor history records the previous distinct tile", SimulatorTests::cursorHistoryUsesDistinctTiles);
@@ -35,9 +46,13 @@ public final class SimulatorTests {
         run("patrol loop stops checkpoint scanning for the current frame", SimulatorTests::patrolLoopStopsCheckpointScan);
         run("wait checkpoints hold inertia while still refreshing avoidance", SimulatorTests::waitAndAlertBehavior);
         run("all stage-clock wait checkpoint kinds advance", SimulatorTests::stageClockWaitCheckpointKinds);
+        run("stage clock derives time from an integer frame counter", SimulatorTests::stageClockDerivesTimeFromFrames);
         run("ignored checkpoints skip side effects and preserve portals", SimulatorTests::ignoredCheckpoints);
         run("portal relocation preserves inertia velocity", SimulatorTests::portalPreservesInertia);
+        run("a vanished unit cannot complete the endpoint", SimulatorTests::vanishedUnitCannotCompleteEndpoint);
         run("early endpoint completion hides remaining checkpoints", SimulatorTests::earlyEndpointCompletionHidesCurrentCheckpoint);
+        run("endpoint and checkpoint radii share one constant", SimulatorTests::sharedCompletionRadius);
+        run("identical scenarios produce bit-identical trajectories", SimulatorTests::deterministicBaseline);
         run("parameter validation rejects invalid input", SimulatorTests::parameterValidation);
         System.out.println("Passed " + passed + " simulator tests.");
     }
@@ -66,6 +81,13 @@ public final class SimulatorTests {
                 "vector at limit is not altered");
     }
 
+    private static void projectionGuardDimension() {
+        Vec2f direction = new Vec2f(0.0001f, 0f);
+        Vec2f projection = new Vec2f(1f, 2f).projectOnto(direction);
+        equal(1f, projection.x(), 0.00001f, "squared denominator keeps a valid projection");
+        equal(0f, projection.y(), 0f, "projection remains parallel to the direction");
+    }
+
     private static void avoidanceNormalizationAndProjection() {
         GridMap map = new GridMap(4, 3);
         map.setRule(new TileCoord(2, 1), TileRule.costlyObstacle(TileRule.BOX_COST));
@@ -86,6 +108,21 @@ public final class SimulatorTests {
         Vec2f towardPassable = calculator.calculate(map, MovementMode.GROUND, config, unit, Vec2f.ZERO);
         equal(new Vec2f(0f, -1f), towardPassable,
                 "inside an impassable tile, nearest-passable direction is normalized");
+    }
+
+    private static void avoidanceUsesEntityTile() {
+        GridMap map = new GridMap(3, 1);
+        map.setRule(new TileCoord(1, 0), TileRule.impassable());
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(2.5f, 0.5f), List.of());
+        UnitConfig config = new UnitConfig(1f, 0.5f, 8f, 10f,
+                new Vec2f(1f, 0f), Vec2f.ZERO, 0.2f, false, false, false);
+        UnitState unit = new UnitState(route, config);
+
+        Vec2f avoidance = new AvoidanceCalculator().calculate(
+                map, MovementMode.GROUND, config, unit, Vec2f.ZERO);
+
+        equal(new Vec2f(1f, 0f), avoidance,
+                "avoidance finds the nearest passable tile from the entity's blocked tile");
     }
 
     private static void nonUniformSpfaCosts() {
@@ -267,6 +304,26 @@ public final class SimulatorTests {
         }
     }
 
+    private static void visitPolicyIsOptIn() {
+        UnitConfig plain = UnitConfig.normalGround(1f);
+        falsity(plain.visitEveryNodeStably(), "default unit does not enable stable node visits");
+        truth(plain.withVisitEveryNodeStably(true).visitEveryNodeStably(),
+                "stable-node policy is explicitly reachable");
+
+        GridMap map = new GridMap(6, 4);
+        map.setRule(new TileCoord(2, 0), TileRule.impassable());
+        map.setRule(new TileCoord(2, 1), TileRule.impassable());
+        Route bent = route(new Vec2f(0.5f, 0.5f), new Vec2f(5.5f, 0.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, bent, plain);
+        for (long frame = 0L; frame < 900L && simulator.unit().mode() == UnitMode.MOVE; frame++) {
+            FrameTrace trace = simulator.tick(frame);
+            if (trace.nextNode() != null && trace.target() != null) {
+                truth(trace.target().equals(trace.nextNode().center()) || trace.target().equals(bent.endpoint()),
+                        "empty routes do not silently enable centre visiting");
+            }
+        }
+    }
+
     private static void unreachableMoveBlocks() {
         GridMap map = new GridMap(3, 1);
         map.setRule(new TileCoord(1, 0), TileRule.impassable());
@@ -281,6 +338,18 @@ public final class SimulatorTests {
         FrameTrace held = simulator.tick(1L);
         equal("", held.transition(), "blocked diagnostic is emitted once");
         falsity(held.avoidanceRecomputed(), "blocked state no longer refreshes avoidance");
+    }
+
+    private static void outsideMapEntryUsesFullPipeline() {
+        GridMap map = new GridMap(4, 1);
+        Route route = route(new Vec2f(-2.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        FrameTrace first = simulator.tick(0L);
+        FrameTrace second = simulator.tick(1L);
+        truth(first.appliedDisplacement().length() < UnitConfig.normalGround(1f).theoreticalSpeed() * F32.DT,
+                "outside entry accelerates instead of jumping to full speed");
+        truth(second.appliedDisplacement().length() > first.appliedDisplacement().length(),
+                "outside entry accumulates inertia through the normal integrator");
     }
 
     private static void unreachableEndpointBlocks() {
@@ -378,6 +447,26 @@ public final class SimulatorTests {
         PathMap refreshed = cache.get(mapA, new TileCoord(2, 0), MovementMode.GROUND, true);
         notSame(original, refreshed, "map version mutation rebuilds affected PathMap");
         equal(2, cache.entryCount(), "stale A entries are evicted while B remains cached");
+    }
+
+    private static void sweptCollisionInputValidation() {
+        GridMap map = new GridMap(2, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(1.5f, 0.5f), List.of());
+        UnitState unit = new UnitState(route, UnitConfig.normalGround(1f));
+        CollisionResolver resolver = new CollisionResolver();
+        expectIllegalArgument(() -> resolver.resolve(map, MovementMode.GROUND, unit,
+                new Vec2f(Float.NaN, 0f), Vec2f.ZERO), "finite");
+        expectIllegalArgument(() -> resolver.resolve(map, MovementMode.GROUND, unit,
+                new Vec2f(5_000f, 0f), new Vec2f(5_000f, 0f)), "cannot sweep");
+    }
+
+    private static void pathMapIsSelfContained() {
+        GridMap map = new GridMap(3, 2);
+        PathMap path = new PathMapBuilder().build(map, new TileCoord(2, 1), MovementMode.GROUND, true);
+        equal(3, path.width(), "path map stores its width");
+        equal(2, path.height(), "path map stores its height");
+        truth(path.contains(new TileCoord(2, 1)), "path map owns valid coordinates");
+        falsity(path.contains(new TileCoord(3, 1)), "path map rejects out-of-range coordinates");
     }
 
     private static void routeOwnedDistances() {
@@ -616,6 +705,21 @@ public final class SimulatorTests {
         equal(UnitMode.MOVE, portalSimulator.unit().mode(), "appearance restores movement in ignore mode");
     }
 
+    private static void stageClockDerivesTimeFromFrames() {
+        StageClock clock = new StageClock();
+        for (int index = 0; index < 10_000; index++) {
+            clock.tick();
+        }
+        equal(10_000L, clock.frame(), "clock tracks integer frame count");
+        equal(10_000L * F32.DT, clock.playTime(), 0f,
+                "play time is one frame multiplication, not repeated accumulation");
+        clock.resetFragmentTime();
+        clock.tick();
+        equal(F32.DT, clock.fragmentTime(), 0f, "fragment time is rebased by frame");
+        expectIllegalArgument(() -> clock.setPlayTime(Float.NaN), "finite");
+        expectIllegalArgument(() -> clock.setBossRushArea(-1), "non-negative");
+    }
+
     private static void portalPreservesInertia() {
         GridMap map = new GridMap(8, 1);
         Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(6.5f, 0.5f), List.of(
@@ -677,6 +781,63 @@ public final class SimulatorTests {
                 null, Vec2f.ZERO, 0f, false, false, false), "offsets");
         expectIllegalArgument(() -> new Route(null, new Vec2f(0.5f, 0.5f), List.of(),
                 MovementMode.GROUND, true, true, false), "Route requires");
+    }
+
+    private static void vanishedUnitCannotCompleteEndpoint() {
+        Route route = new Route(
+                new Vec2f(0.5f, 0.5f), new Vec2f(0.5f, 0.5f),
+                List.of(Checkpoint.disappear(), Checkpoint.waitForSeconds(1f),
+                        Checkpoint.appearAt(new Vec2f(1.5f, 0.5f))),
+                MovementMode.GROUND, true, false, false);
+        PathfindingSimulator simulator = new PathfindingSimulator(new GridMap(3, 1), route,
+                UnitConfig.normalGround(1f));
+        simulator.tick(0L);
+        equal(UnitMode.VANISHED, simulator.unit().mode(), "disappearance keeps the unit vanished during wait");
+        falsity(simulator.unit().routeProgress().completed(), "vanished unit cannot complete endpoint");
+    }
+
+    private static void sharedCompletionRadius() {
+        equal(Checkpoint.DEFAULT_MOVE_RADIUS, PathfindingSimulator.ENDPOINT_RADIUS, 0f,
+                "endpoint radius uses checkpoint default");
+        equal(Checkpoint.DEFAULT_MOVE_RADIUS, Checkpoint.move(new Vec2f(0.5f, 0.5f)).radius(), 0f,
+                "MOVE default radius is shared");
+        equal(Checkpoint.DEFAULT_MOVE_RADIUS, Checkpoint.patrolMove(new Vec2f(0.5f, 0.5f)).radius(), 0f,
+                "PATROL_MOVE default radius is shared");
+    }
+
+    private static void deterministicBaseline() {
+        List<Vec2f> first = baselineTrajectory();
+        List<Vec2f> second = baselineTrajectory();
+        equal(first.size(), second.size(), "baseline runs have equal length");
+        for (int index = 0; index < first.size(); index++) {
+            truth(Float.floatToIntBits(first.get(index).x()) == Float.floatToIntBits(second.get(index).x())
+                            && Float.floatToIntBits(first.get(index).y()) == Float.floatToIntBits(second.get(index).y()),
+                    "baseline frame " + index + " is bit-identical");
+        }
+    }
+
+    private static List<Vec2f> baselineTrajectory() {
+        GridMap map = new GridMap(6, 3);
+        map.setRule(new TileCoord(3, 1), TileRule.box());
+        Route route = route(new Vec2f(0.5f, 1.5f), new Vec2f(5.5f, 1.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        List<Vec2f> result = new ArrayList<>();
+        for (long frame = 0; frame < 600 && simulator.unit().mode() != UnitMode.COMPLETED; frame++) {
+            simulator.tick(frame);
+            result.add(simulator.unit().entityPosition());
+        }
+        truth(simulator.unit().mode() == UnitMode.COMPLETED, "baseline scenario reaches endpoint");
+        return result;
+    }
+
+    private static void printBaseline() {
+        List<Vec2f> positions = baselineTrajectory();
+        for (int frame = 0; frame < positions.size(); frame++) {
+            Vec2f position = positions.get(frame);
+            System.out.printf(Locale.ROOT, "%d\t%08x\t%08x\t%.7f\t%.7f%n", frame + 1,
+                    Float.floatToIntBits(position.x()), Float.floatToIntBits(position.y()),
+                    position.x(), position.y());
+        }
     }
 
     private static Route route(Vec2f spawn, Vec2f endpoint, List<Checkpoint> checkpoints) {

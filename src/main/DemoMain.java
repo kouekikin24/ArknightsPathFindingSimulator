@@ -1,4 +1,5 @@
 import java.util.List;
+import java.util.Locale;
 
 /** Small command-line audit of the two-checkpoint example discussed in the conversation. */
 public final class DemoMain {
@@ -22,7 +23,7 @@ public final class DemoMain {
              globalFrame++) {
             FrameTrace trace = simulator.tick(globalFrame);
             if (trace.frame() < 5 || !trace.transition().isEmpty() || trace.frame() % 30 == 0) {
-                System.out.printf(
+                System.out.printf(Locale.ROOT,
                         "frame=%d cp=%d pos=(%.7f,%.7f) velocity=(%.7f,%.7f) transition=%s%n",
                         trace.frame(), trace.checkpointIndex(),
                         trace.cursorAfter().x(), trace.cursorAfter().y(),

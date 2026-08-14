@@ -151,6 +151,11 @@ public final class SimulatorWorkbench extends JFrame {
         JButton step = iconButton("⏭", "推进一帧");
         step.addActionListener(event -> {
             stopPlayback();
+            if (!session.canTick()) {
+                footerStatus.setText("模拟已到达终态");
+                return;
+            }
+            invalidateSeek();
             refresh(session.tick());
         });
         toolbar.add(step);
@@ -306,7 +311,7 @@ public final class SimulatorWorkbench extends JFrame {
         section.add(toolButton(group, EditorTool.SPAWN, "S", "起点"));
         section.add(toolButton(group, EditorTool.ENDPOINT, "E", "终点"));
         section.add(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"));
-        section.add(new JLabel());
+        section.add(toolButton(group, EditorTool.BROWSE, "浏览", "浏览地图：左键拖动平移"));
         return section;
     }
 
@@ -409,6 +414,9 @@ public final class SimulatorWorkbench extends JFrame {
             case SPAWN -> session.placeSpawn(cell);
             case ENDPOINT -> session.placeEndpoint(cell);
             case CHECKPOINT -> session.addCheckpoint(cell);
+            case BROWSE -> {
+                return;
+            }
         }
         refresh(session.snapshot());
     }
@@ -432,7 +440,7 @@ public final class SimulatorWorkbench extends JFrame {
                     break;
                 }
             }
-        } catch (IllegalStateException terminal) {
+        } catch (SimulationSession.TerminalStateException terminal) {
             stopPlayback();
         }
         refresh(current == null ? session.snapshot() : current);
@@ -610,7 +618,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void refreshZoomLabel() {
-        zoomValue.setText(String.format(Locale.ROOT, "%.0f%%", canvas.zoom() * 100d));
+        zoomValue.setText(String.format(Locale.ROOT, "%.0f%%", canvas.zoomPercent()));
     }
 
     private List<UiSnapshot> trajectoryThroughFrame(int frame) {
@@ -747,7 +755,10 @@ public final class SimulatorWorkbench extends JFrame {
         button.setFocusable(false);
         button.setPreferredSize(new Dimension(34, 32));
         button.setMargin(new Insets(2, 2, 2, 2));
-        button.addActionListener(event -> selectedTool = tool);
+        button.addActionListener(event -> {
+            selectedTool = tool;
+            canvas.setBrowseMode(tool == EditorTool.BROWSE);
+        });
         if (tool == selectedTool) {
             button.setSelected(true);
         }
@@ -757,7 +768,7 @@ public final class SimulatorWorkbench extends JFrame {
         return ((Number) spinner.getValue()).intValue();
     }
 
-    private enum EditorTool { OPEN, BOX, PIT, WALL, SPAWN, ENDPOINT, CHECKPOINT }
+    private enum EditorTool { OPEN, BOX, PIT, WALL, SPAWN, ENDPOINT, CHECKPOINT, BROWSE }
 
     private static final class SwatchIcon implements Icon {
         private final Color color;

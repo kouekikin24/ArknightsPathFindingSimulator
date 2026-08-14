@@ -97,7 +97,7 @@ public final class GridMap {
         if (mode == MovementMode.FLYING) {
             return false;
         }
-        return contains(coordinate) && (rule(coordinate).avoidanceBlocked(mode) || !passable(coordinate, mode));
+        return !contains(coordinate) || rule(coordinate).avoidanceBlocked(mode) || !passable(coordinate, mode);
     }
 
     public boolean collisionBlocked(TileCoord coordinate, MovementMode mode) {

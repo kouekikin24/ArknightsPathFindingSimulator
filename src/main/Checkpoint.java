@@ -10,6 +10,8 @@ public record Checkpoint(
         float value,
         int area) {
 
+    public static final float DEFAULT_MOVE_RADIUS = 0.05f;
+
     public Checkpoint {
         if (type == null) {
             throw new IllegalArgumentException("Checkpoint type is required");
@@ -32,7 +34,7 @@ public record Checkpoint(
     }
 
     public static Checkpoint move(Vec2f point) {
-        return new Checkpoint(CheckpointType.MOVE, point, 0.05f, 0f, 0);
+        return new Checkpoint(CheckpointType.MOVE, point, DEFAULT_MOVE_RADIUS, 0f, 0);
     }
 
     public static Checkpoint move(Vec2f point, float radius) {
@@ -40,7 +42,7 @@ public record Checkpoint(
     }
 
     public static Checkpoint patrolMove(Vec2f point) {
-        return new Checkpoint(CheckpointType.PATROL_MOVE, point, 0.05f, 0f, 0);
+        return new Checkpoint(CheckpointType.PATROL_MOVE, point, DEFAULT_MOVE_RADIUS, 0f, 0);
     }
 
     public static Checkpoint waitForSeconds(float seconds) {

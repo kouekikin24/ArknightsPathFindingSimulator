@@ -7,8 +7,24 @@
  * This deliberately does not advance a unit to the wall before it slides.</p>
  */
 public final class CollisionResolver {
+    private static final int MAXIMUM_SWEPT_TILES = 4096;
+
     public CollisionResult resolve(GridMap map, MovementMode mode, UnitState unit,
                                    Vec2f requestedDisplacement, Vec2f nextVelocity) {
+        return resolve(map, mode, unit, requestedDisplacement, nextVelocity, true);
+    }
+
+    /**
+     * Resolves a displacement, optionally treating the stage boundary as a wall.
+     * While a unit is still outside the map, the boundary must be open so it can
+     * enter; in-map terrain remains collision blocking in either mode.
+     */
+    public CollisionResult resolve(GridMap map, MovementMode mode, UnitState unit,
+                                   Vec2f requestedDisplacement, Vec2f nextVelocity,
+                                   boolean stageBoundaryBlocks) {
+        requireFinite(requestedDisplacement, "Requested displacement");
+        requireFinite(nextVelocity, "Next velocity");
+        requireFinite(unit.entityPosition(), "Entity position");
         Vec2f correctedDisplacement = requestedDisplacement;
         Vec2f correctedVelocity = nextVelocity;
         boolean collided = false;
@@ -17,7 +33,8 @@ public final class CollisionResolver {
         // each sweep at the source so a retained tangent is checked for the full
         // frame rather than only for the post-impact remainder.
         for (int correction = 0; correction < 2; correction++) {
-            CollisionAxes hit = firstCollision(map, mode, unit.entityPosition(), correctedDisplacement);
+            CollisionAxes hit = firstCollision(map, mode, unit.entityPosition(),
+                    correctedDisplacement, stageBoundaryBlocks);
             if (hit == null) {
                 break;
             }
@@ -48,12 +65,14 @@ public final class CollisionResolver {
      * traversed in DDA order so a wall several tiles away is still observed.
      */
     private CollisionAxes firstCollision(GridMap map, MovementMode mode,
-                                         Vec2f position, Vec2f displacement) {
+                                         Vec2f position, Vec2f displacement,
+                                         boolean stageBoundaryBlocks) {
         TileCoord current = TileCoord.fromPosition(position);
         Vec2f destination = position.add(displacement);
         TileCoord destinationTile = TileCoord.fromPosition(destination);
         int stepX = direction(displacement.x());
         int stepY = direction(displacement.y());
+        requireSweepInRange(current, destinationTile);
 
         while (hasPendingCrossing(current.x(), destinationTile.x(), stepX)
                 || hasPendingCrossing(current.y(), destinationTile.y(), stepY)) {
@@ -71,12 +90,11 @@ public final class CollisionResolver {
                 TileCoord yNeighbor = new TileCoord(current.x(), current.y() + stepY);
                 TileCoord diagonalNeighbor = new TileCoord(current.x() + stepX, current.y() + stepY);
 
-                boolean blockX = map.collisionBlocked(xNeighbor, mode);
-                boolean blockY = map.collisionBlocked(yNeighbor, mode);
+                boolean blockX = blocked(map, mode, xNeighbor, stageBoundaryBlocks);
+                boolean blockY = blocked(map, mode, yNeighbor, stageBoundaryBlocks);
                 // A corner entry is not legal unless all three adjacent cells are
                 // legal. A blocked diagonal removes both normal components.
-                boolean blockDiagonal = map.collisionBlocked(diagonalNeighbor, mode);
-                if (blockDiagonal) {
+                if (blocked(map, mode, diagonalNeighbor, stageBoundaryBlocks)) {
                     return CollisionAxes.BOTH;
                 }
                 if (blockX || blockY) {
@@ -85,19 +103,24 @@ public final class CollisionResolver {
                 current = diagonalNeighbor;
             } else if (!crossesY || (crossesX && timeX < timeY)) {
                 TileCoord xNeighbor = new TileCoord(current.x() + stepX, current.y());
-                if (map.collisionBlocked(xNeighbor, mode)) {
+                if (blocked(map, mode, xNeighbor, stageBoundaryBlocks)) {
                     return CollisionAxes.X;
                 }
                 current = xNeighbor;
             } else {
                 TileCoord yNeighbor = new TileCoord(current.x(), current.y() + stepY);
-                if (map.collisionBlocked(yNeighbor, mode)) {
+                if (blocked(map, mode, yNeighbor, stageBoundaryBlocks)) {
                     return CollisionAxes.Y;
                 }
                 current = yNeighbor;
             }
         }
         return null;
+    }
+
+    private boolean blocked(GridMap map, MovementMode mode, TileCoord tile,
+                            boolean stageBoundaryBlocks) {
+        return !map.contains(tile) ? stageBoundaryBlocks : map.collisionBlocked(tile, mode);
     }
 
     private boolean hasPendingCrossing(int current, int destination, int step) {
@@ -116,6 +139,20 @@ public final class CollisionResolver {
     private float crossingTime(float position, float displacement, int currentTile, int step) {
         float boundary = step > 0 ? currentTile + 1f : currentTile;
         return (boundary - position) / displacement;
+    }
+
+    private static void requireFinite(Vec2f value, String name) {
+        if (!Float.isFinite(value.x()) || !Float.isFinite(value.y())) {
+            throw new IllegalArgumentException(name + " must be finite: " + value);
+        }
+    }
+
+    private static void requireSweepInRange(TileCoord from, TileCoord to) {
+        long span = Math.abs((long) to.x() - from.x()) + Math.abs((long) to.y() - from.y());
+        if (span > MAXIMUM_SWEPT_TILES) {
+            throw new IllegalArgumentException("A single frame cannot sweep " + span
+                    + " tiles; check the configured speed");
+        }
     }
 
     private record CollisionAxes(boolean blockX, boolean blockY) {
