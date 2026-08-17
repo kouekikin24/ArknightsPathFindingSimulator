@@ -361,13 +361,8 @@ public final class PathfindingSimulator {
 
     private boolean movementCheckpointComplete(Checkpoint checkpoint) {
         TileCoord cursorTile = TileCoord.fromPosition(unit.cursorPosition());
-        if (!map.contains(cursorTile)) {
-            return false;
-        }
-        if (unit.cursorPosition().distanceTo(checkpoint.point()) <= checkpoint.radius()) {
-            return true;
-        }
-        return false;
+        return map.contains(cursorTile)
+                && unit.cursorPosition().distanceTo(checkpoint.point()) <= checkpoint.radius();
     }
 
     private boolean includedWhenIgnoring(Checkpoint checkpoint) {

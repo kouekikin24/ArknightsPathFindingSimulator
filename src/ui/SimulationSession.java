@@ -9,7 +9,11 @@ import java.util.List;
  */
 public final class SimulationSession {
     private static final int MINIMUM_DIMENSION = 2;
-    private static final int REPLAY_CHUNK_FRAMES = 240;
+    /**
+     * Frames replayed per lock acquisition. Small chunks bound how long a
+     * background seek can hold the session lock, keeping EDT edits responsive.
+     */
+    private static final int REPLAY_CHUNK_FRAMES = 60;
 
     private int width;
     private int height;
@@ -25,7 +29,6 @@ public final class SimulationSession {
     private Route route;
     private PathfindingSimulator simulator;
     private FrameTrace lastTrace;
-    /** Deterministic UI playback states. Index n is exactly S[n]. */
     /** Immutable timeline state atomically published to EDT readers. */
     private volatile Timeline timeline = Timeline.EMPTY;
     /** The first confirmed terminal state, or -1 while the route is live. */
@@ -73,17 +76,25 @@ public final class SimulationSession {
         rebuildSimulator();
     }
 
-    public synchronized void setTerrain(UiCell cell, UiTerrain value) {
+    /**
+     * Applies an editor terrain change.
+     *
+     * @return false when the cell is occupied by the spawn, endpoint, or a
+     *         checkpoint, in which case nothing is changed and the caller
+     *         should tell the user why.
+     */
+    public synchronized boolean setTerrain(UiCell cell, UiTerrain value) {
         requireInside(cell);
         if (value != UiTerrain.OPEN && isRouteCell(cell)) {
-            return;
+            return false;
         }
         int index = indexOf(cell);
         if (terrain[index] == value) {
-            return;
+            return true;
         }
         terrain[index] = value;
         rebuildSimulator();
+        return true;
     }
 
     public synchronized void placeSpawn(UiCell cell) {
@@ -219,6 +230,7 @@ public final class SimulationSession {
                 modeLabel(unit.mode()),
                 unit.routeProgress().checkpointIndex(),
                 unit.routeProgress().completed(),
+                isTerminalMode(unit.mode()),
                 toUiPoint(unit.entityPosition()),
                 toUiPoint(unit.cursorPosition()),
                 toUiPoint(unit.inertiaVelocity()),
@@ -589,7 +601,15 @@ public final class SimulationSession {
         return Float.floatToIntBits(left) == Float.floatToIntBits(right);
     }
 
-    /** Immutable (backing array, visible size) pair published as one reference. */
+    /**
+     * Immutable (backing array, visible size) pair published as one reference.
+     *
+     * <p>The timeline deliberately retains every generated frame: exact seeks,
+     * backward replays, and full-trajectory rendering all read arbitrary S[n].
+     * Per-frame memory stays small because snapshots share the cached terrain
+     * view and path-segment lists, but very long playback sessions therefore
+     * grow without bound by design.
+     */
     private static final class Timeline {
         private static final Timeline EMPTY = new Timeline(new UiSnapshot[0], 0);
         private static final int MINIMUM_CAPACITY = 64;

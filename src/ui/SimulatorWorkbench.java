@@ -404,20 +404,31 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void applyEditorTool(UiCell cell) {
-        stopPlayback();
-        invalidateSeek();
-        switch (selectedTool) {
+        boolean applied = switch (selectedTool) {
             case OPEN -> session.setTerrain(cell, UiTerrain.OPEN);
             case BOX -> session.setTerrain(cell, UiTerrain.BOX);
             case PIT -> session.setTerrain(cell, UiTerrain.PIT);
             case WALL -> session.setTerrain(cell, UiTerrain.WALL);
-            case SPAWN -> session.placeSpawn(cell);
-            case ENDPOINT -> session.placeEndpoint(cell);
-            case CHECKPOINT -> session.addCheckpoint(cell);
-            case BROWSE -> {
-                return;
+            case SPAWN -> {
+                session.placeSpawn(cell);
+                yield true;
             }
+            case ENDPOINT -> {
+                session.placeEndpoint(cell);
+                yield true;
+            }
+            case CHECKPOINT -> {
+                session.addCheckpoint(cell);
+                yield true;
+            }
+            case BROWSE -> true;
+        };
+        if (!applied) {
+            footerStatus.setText("该格已被起点、终点或检查点占用，不能放置地形");
+            return;
         }
+        stopPlayback();
+        invalidateSeek();
         refresh(session.snapshot());
     }
 
@@ -436,7 +447,7 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             for (int index = 0; index < framesPerTimerTick(); index++) {
                 current = session.tick();
-                if (isTerminal(current)) {
+                if (current.terminal()) {
                     break;
                 }
             }
@@ -444,7 +455,7 @@ public final class SimulatorWorkbench extends JFrame {
             stopPlayback();
         }
         refresh(current == null ? session.snapshot() : current);
-        if (current != null && isTerminal(current)) {
+        if (current != null && current.terminal()) {
             stopPlayback();
         }
     }
@@ -551,7 +562,11 @@ public final class SimulatorWorkbench extends JFrame {
             timeValue.setText(SimulationSession.formatFrameTime(snapshot.frame()));
             sliderFrameValue.setText("帧 " + snapshot.frame());
             sliderTimeValue.setText(SimulationSession.formatFrameTime(snapshot.frame()));
-            timeInput.setText(Long.toString(snapshot.frame()));
+            // Keep whatever the user is typing in the seek field; a later blur
+            // or an actual seek refreshes it with the confirmed frame.
+            if (!timeInput.hasFocus()) {
+                timeInput.setText(Long.toString(snapshot.frame()));
+            }
             modeValue.setText(snapshot.unitMode());
             checkpointValue.setText(checkpointLabel(snapshot));
             positionValue.setText(formatPoint(snapshot.entityPosition()));
@@ -637,10 +652,6 @@ public final class SimulatorWorkbench extends JFrame {
         if (snapshot.activeCheckpoint() >= 0 && snapshot.activeCheckpoint() < checkpointModel.size()) {
             checkpointList.setSelectedIndex(snapshot.activeCheckpoint());
         }
-    }
-
-    private static boolean isTerminal(UiSnapshot snapshot) {
-        return snapshot.completed() || "阻挡".equals(snapshot.unitMode());
     }
 
     private static String checkpointLabel(UiSnapshot snapshot) {

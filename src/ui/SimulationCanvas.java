@@ -28,7 +28,6 @@ public final class SimulationCanvas extends JComponent {
     private static final Color GRID_LINE = new Color(191, 204, 196);
     private static final Color PATH = new Color(68, 135, 116);
     private static final Color TRAJECTORY = new Color(198, 57, 46);
-    private static final float TRAJECTORY_OPACITY = 1.00f;
     private static final double TRAJECTORY_HIT_RADIUS = 30d;
     private static final int HOVER_INVALIDATION_WIDTH = 520;
     private static final int HOVER_INVALIDATION_HEIGHT = 140;
@@ -69,6 +68,9 @@ public final class SimulationCanvas extends JComponent {
                     updateHover(event);
                     return;
                 }
+                if (!javax.swing.SwingUtilities.isLeftMouseButton(event)) {
+                    return;
+                }
                 lastDraggedCell = null;
                 sendCell(event);
             }
@@ -78,6 +80,9 @@ public final class SimulationCanvas extends JComponent {
                 if (browseMode && mapPanStart != null) {
                     panMap(event);
                     updateHover(event);
+                    return;
+                }
+                if (!javax.swing.SwingUtilities.isLeftMouseButton(event)) {
                     return;
                 }
                 sendCell(event);
@@ -137,8 +142,13 @@ public final class SimulationCanvas extends JComponent {
         repaint();
     }
 
+    /**
+     * Sets the trajectory samples. Callers must pass lists they never mutate
+     * afterwards; the canvas keeps the reference so a playback frame does not
+     * copy an ever-growing timeline.
+     */
     public void setTrajectory(List<UiSnapshot> states) {
-        trajectoryStates = states == null ? List.of() : List.copyOf(states);
+        trajectoryStates = states == null ? List.of() : states;
         refreshHoverSample();
         repaint();
     }
@@ -376,27 +386,21 @@ public final class SimulationCanvas extends JComponent {
         if (trajectoryStates.size() < 2) {
             return;
         }
-        Composite original = canvas.getComposite();
-        canvas.setComposite(AlphaComposite.SrcOver.derive(TRAJECTORY_OPACITY));
-        try {
-            canvas.setColor(TRAJECTORY);
-            canvas.setStroke(new BasicStroke(trajectoryStrokeWidth(),
-                    BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER));
-            for (int index = 1; index < trajectoryStates.size(); index++) {
-                UiSnapshot previous = trajectoryStates.get(index - 1);
-                UiSnapshot current = trajectoryStates.get(index);
-                if (current.trajectoryBreak()) {
-                    continue;
-                }
-                Path2D.Float segment = new Path2D.Float();
-                segment.moveTo(worldToCanvasXFloat(previous.entityPosition().x()),
-                        worldToCanvasYFloat(previous.entityPosition().y()));
-                segment.lineTo(worldToCanvasXFloat(current.entityPosition().x()),
-                        worldToCanvasYFloat(current.entityPosition().y()));
-                canvas.draw(segment);
+        canvas.setColor(TRAJECTORY);
+        canvas.setStroke(new BasicStroke(trajectoryStrokeWidth(),
+                BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER));
+        for (int index = 1; index < trajectoryStates.size(); index++) {
+            UiSnapshot previous = trajectoryStates.get(index - 1);
+            UiSnapshot current = trajectoryStates.get(index);
+            if (current.trajectoryBreak()) {
+                continue;
             }
-        } finally {
-            canvas.setComposite(original);
+            Path2D.Float segment = new Path2D.Float();
+            segment.moveTo(worldToCanvasXFloat(previous.entityPosition().x()),
+                    worldToCanvasYFloat(previous.entityPosition().y()));
+            segment.lineTo(worldToCanvasXFloat(current.entityPosition().x()),
+                    worldToCanvasYFloat(current.entityPosition().y()));
+            canvas.draw(segment);
         }
     }
 

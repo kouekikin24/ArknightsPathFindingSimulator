@@ -52,6 +52,7 @@ public final class SimulatorUiMain {
         verifyExactSeek();
         verifyTimeParsing();
         verifyPortalTrajectoryBreak();
+        verifyTerminalFlagAndTerrainRejection();
         System.out.println("UI session verification passed.");
     }
 
@@ -135,6 +136,7 @@ public final class SimulatorUiMain {
                 verifyMouseWheelZoom(canvas);
                 verifyZoomAnchor(canvas);
                 verifyBrowsePan(snapshot);
+                verifyNonPrimaryButtonsDoNotEdit(snapshot);
                 verifyTrajectoryTooltip(canvas);
                 verifyHoverInvalidation(snapshot);
                 verifyCanvasPaint(canvas, 800, 560);
@@ -214,12 +216,50 @@ public final class SimulatorUiMain {
 
         canvas.setBrowseMode(false);
         Point editPoint = canvas.canvasPointForWorld(1.5d, 1.5d);
-        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L, 0,
-                editPoint.x, editPoint.y, 1, false, MouseEvent.BUTTON1));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON1_DOWN_MASK, editPoint.x, editPoint.y, 1, false, MouseEvent.BUTTON1));
         canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
                 editPoint.x, editPoint.y, 1, false, MouseEvent.BUTTON1));
         if (editCount[0] != 1) {
             throw new IllegalStateException("Leaving browse mode did not restore map editing");
+        }
+    }
+
+    private static void verifyNonPrimaryButtonsDoNotEdit(UiSnapshot snapshot) {
+        int[] editCount = {0};
+        SimulationCanvas canvas = new SimulationCanvas(cell -> editCount[0]++);
+        canvas.setSnapshot(snapshot);
+        Point point = canvas.canvasPointForWorld(1.5d, 1.5d);
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON2_DOWN_MASK, point.x, point.y, 1, false, MouseEvent.BUTTON2));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
+                MouseEvent.BUTTON3_DOWN_MASK, point.x, point.y, 0, false, MouseEvent.BUTTON3));
+        if (editCount[0] != 0) {
+            throw new IllegalStateException("Non-primary mouse buttons invoked an editor action");
+        }
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON1_DOWN_MASK, point.x, point.y, 1, false, MouseEvent.BUTTON1));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                point.x, point.y, 1, false, MouseEvent.BUTTON1));
+        if (editCount[0] != 1) {
+            throw new IllegalStateException("The primary button no longer edits after the button guard");
+        }
+    }
+
+    private static void verifyTerminalFlagAndTerrainRejection() {
+        SimulationSession session = new SimulationSession();
+        session.newScenario(4, 3);
+        if (!session.setTerrain(new UiCell(1, 0), UiTerrain.WALL)
+                || !session.setTerrain(new UiCell(1, 1), UiTerrain.WALL)
+                || !session.setTerrain(new UiCell(1, 2), UiTerrain.WALL)) {
+            throw new IllegalStateException("Placing walls on free cells was rejected");
+        }
+        if (session.setTerrain(new UiCell(0, 1), UiTerrain.WALL)) {
+            throw new IllegalStateException("Placing terrain on the spawn cell was accepted");
+        }
+        UiSnapshot blocked = session.tick();
+        if (!blocked.terminal() || !"阻挡".equals(blocked.unitMode())) {
+            throw new IllegalStateException("The terminal flag did not reflect the blocked mode");
         }
     }
 
@@ -333,7 +373,7 @@ public final class SimulatorUiMain {
     private static UiSnapshot portalSnapshot(int frame, UiPoint entityPosition, boolean trajectoryBreak) {
         return new UiSnapshot(8, 3, java.util.Collections.nCopies(24, UiTerrain.OPEN),
                 new UiPoint(0.5f, 1.5f), new UiPoint(7.5f, 1.5f), List.of(),
-                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false,
+                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false,
                 entityPosition, entityPosition, UiPoint.ZERO, UiPoint.ZERO, UiPoint.ZERO,
                 new UiCell(0, 1), null, null, false, "APPEAR_AT_POS", 0f, List.of(), trajectoryBreak);
     }
@@ -341,7 +381,7 @@ public final class SimulatorUiMain {
     private static UiSnapshot tooltipSnapshot(int frame, UiPoint entityPosition, boolean trajectoryBreak) {
         return new UiSnapshot(8, 3, java.util.Collections.nCopies(24, UiTerrain.OPEN),
                 new UiPoint(0.5f, 1.5f), new UiPoint(7.5f, 1.5f), List.of(),
-                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false,
+                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false,
                 entityPosition, entityPosition, UiPoint.ZERO, UiPoint.ZERO, UiPoint.ZERO,
                 new UiCell(0, 1), null, null, false, "", 0f, List.of(), trajectoryBreak);
     }

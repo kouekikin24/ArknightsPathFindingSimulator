@@ -15,6 +15,7 @@ public record UiSnapshot(
         String unitMode,
         int activeCheckpoint,
         boolean completed,
+        boolean terminal,
         UiPoint entityPosition,
         UiPoint cursorPosition,
         UiPoint inertiaVelocity,

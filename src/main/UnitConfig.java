@@ -44,18 +44,6 @@ public record UnitConfig(
                 visitEveryTileCenter, visitEveryNodeCenter, value);
     }
 
-    public UnitConfig withVisitEveryTileCenter(boolean value) {
-        return new UnitConfig(attributeSpeed, moveMultiplier, steeringFactor, maxSteeringForce,
-                spawnEntityOffset, footOffset, halfBodyWidth,
-                value, visitEveryNodeCenter, visitEveryNodeStably);
-    }
-
-    public UnitConfig withVisitEveryNodeCenter(boolean value) {
-        return new UnitConfig(attributeSpeed, moveMultiplier, steeringFactor, maxSteeringForce,
-                spawnEntityOffset, footOffset, halfBodyWidth,
-                visitEveryTileCenter, value, visitEveryNodeStably);
-    }
-
     public float theoreticalSpeed() {
         return F32.max(attributeSpeed, 0.1f) * moveMultiplier;
     }

@@ -33,17 +33,12 @@ public final class RouteProgress {
      */
     public boolean advance(Route route, StageClock clock) {
         Checkpoint current = current(route);
-        if (current != null && current.type() == CheckpointType.PATROL_MOVE
+        boolean looped = current != null && current.type() == CheckpointType.PATROL_MOVE
                 && checkpointIndex == route.checkpoints().size() - 1
-                && route.hasTerminalPatrolLoop()) {
-            checkpointIndex = 0;
-            enteredPlayTime = clock.playTime();
-            return true;
-        } else {
-            checkpointIndex++;
-        }
+                && route.hasTerminalPatrolLoop();
+        checkpointIndex = looped ? 0 : checkpointIndex + 1;
         enteredPlayTime = clock.playTime();
-        return false;
+        return looped;
     }
 
     public void markCompleted() {
