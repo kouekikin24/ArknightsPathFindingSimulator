@@ -589,7 +589,11 @@ public final class SimulationCanvas extends JComponent {
         if (snapshot.frame() == 0) {
             drawMarker(canvas, snapshot.spawn(), SPAWN, "S", false);
             for (int index = 0; index < snapshot.checkpoints().size(); index++) {
-                drawMarker(canvas, snapshot.checkpoints().get(index), CHECKPOINT,
+                UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
+                if (checkpoint.cell() == null) {
+                    continue;
+                }
+                drawMarker(canvas, checkpoint.cell().center(), CHECKPOINT,
                         Integer.toString(index + 1), true);
             }
         }

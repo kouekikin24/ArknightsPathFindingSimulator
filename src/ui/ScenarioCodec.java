@@ -6,19 +6,23 @@ import java.util.List;
  * format is line-oriented key/value text so files stay diff-friendly:
  *
  * <pre>
- *   # arknights pathfinding scenario v1
+ *   # arknights pathfinding scenario v2
  *   map 12 8
  *   spawn 1 1
  *   endpoint 10 6
  *   movement GROUND
  *   speed 1.0
  *   diagonal true
- *   checkpoint 5 1
+ *   checkpoint MOVE 5 1
+ *   checkpoint WAIT_FOR_SECONDS 2.5
+ *   checkpoint DISAPPEAR
  *   terrain 7 3 BOX
  * </pre>
  *
- * Only non-OPEN terrain cells are listed. Parsing rejects unknown or
- * misplaced lines with their line number instead of ignoring them silently.
+ * Only non-OPEN terrain cells are listed. Checkpoint lines carry the type
+ * name plus its cell, seconds, or area argument; bare "checkpoint x y" lines
+ * from v1 files are still read as MOVE. Parsing rejects unknown or misplaced
+ * lines with their line number instead of ignoring them silently.
  */
 final class ScenarioCodec {
     static final int MINIMUM_DIMENSION = 2;
@@ -31,25 +35,33 @@ final class ScenarioCodec {
     }
 
     record Scenario(int width, int height, UiCell spawn, UiCell endpoint,
-                    List<UiCell> checkpoints, UiMovementMode movementMode,
+                    List<UiCheckpoint> checkpoints, UiMovementMode movementMode,
                     float speed, boolean allowDiagonalMove,
                     List<TerrainEntry> terrain) {
     }
 
     static String format(int width, int height, List<UiTerrain> terrain, UiCell spawn,
-                         UiCell endpoint, List<UiCell> checkpoints, UiMovementMode movementMode,
+                         UiCell endpoint, List<UiCheckpoint> checkpoints, UiMovementMode movementMode,
                          float speed, boolean allowDiagonalMove) {
         StringBuilder text = new StringBuilder();
-        text.append("# arknights pathfinding scenario v1\n");
+        text.append("# arknights pathfinding scenario v2\n");
         text.append("map ").append(width).append(' ').append(height).append('\n');
         text.append("spawn ").append(spawn.x()).append(' ').append(spawn.y()).append('\n');
         text.append("endpoint ").append(endpoint.x()).append(' ').append(endpoint.y()).append('\n');
         text.append("movement ").append(movementMode.name()).append('\n');
         text.append("speed ").append(Float.toString(speed)).append('\n');
         text.append("diagonal ").append(allowDiagonalMove).append('\n');
-        for (UiCell checkpoint : checkpoints) {
-            text.append("checkpoint ").append(checkpoint.x()).append(' ')
-                    .append(checkpoint.y()).append('\n');
+        for (UiCheckpoint checkpoint : checkpoints) {
+            text.append("checkpoint ").append(checkpoint.type().name());
+            if (checkpoint.cell() != null) {
+                text.append(' ').append(checkpoint.cell().x()).append(' ')
+                        .append(checkpoint.cell().y());
+            } else if (checkpoint.type().usesSeconds()) {
+                text.append(' ').append(Float.toString(checkpoint.value()));
+            } else if (checkpoint.type().usesArea()) {
+                text.append(' ').append(checkpoint.area());
+            }
+            text.append('\n');
         }
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -74,7 +86,7 @@ final class ScenarioCodec {
         UiMovementMode movementMode = null;
         Float speed = null;
         Boolean diagonal = null;
-        List<UiCell> checkpoints = new ArrayList<>();
+        List<UiCheckpoint> checkpoints = new ArrayList<>();
         List<TerrainEntry> terrain = new ArrayList<>();
 
         String[] lines = text.split("\\R", -1);
@@ -104,14 +116,14 @@ final class ScenarioCodec {
                     if (spawn != null) {
                         throw duplicate("spawn", lineNumber);
                     }
-                    spawn = parseCell(parts, width, height, lineNumber);
+                    spawn = parseCell(parts[1], parts[2], width, height, lineNumber);
                 }
                 case "endpoint" -> {
                     requireParts(parts, 3, "endpoint <x> <y>", lineNumber);
                     if (endpoint != null) {
                         throw duplicate("endpoint", lineNumber);
                     }
-                    endpoint = parseCell(parts, width, height, lineNumber);
+                    endpoint = parseCell(parts[1], parts[2], width, height, lineNumber);
                 }
                 case "movement" -> {
                     requireParts(parts, 2, "movement GROUND|FLYING", lineNumber);
@@ -145,17 +157,27 @@ final class ScenarioCodec {
                     diagonal = Boolean.parseBoolean(parts[1]);
                 }
                 case "checkpoint" -> {
-                    requireParts(parts, 3, "checkpoint <x> <y>", lineNumber);
-                    UiCell cell = parseCell(parts, width, height, lineNumber);
-                    if (checkpoints.contains(cell)) {
-                        throw new IllegalArgumentException(
-                                "Duplicate checkpoint " + cell + " at line " + lineNumber);
+                    UiCheckpoint checkpoint;
+                    if (parts.length == 3 && isInteger(parts[1]) && isInteger(parts[2])) {
+                        // Legacy v1 lines carried bare coordinates and meant MOVE.
+                        checkpoint = UiCheckpoint.move(parseCell(parts[1], parts[2], width, height, lineNumber));
+                    } else {
+                        if (parts.length < 2) {
+                            throw new IllegalArgumentException(
+                                    "Expected 'checkpoint <TYPE> [arguments]' at line " + lineNumber);
+                        }
+                        checkpoint = parseCheckpointBody(parts, width, height, lineNumber);
                     }
-                    checkpoints.add(cell);
+                    if (checkpoint.cell() != null && containsCell(checkpoints, checkpoint.cell())) {
+                        throw new IllegalArgumentException("Duplicate checkpoint at cell ("
+                                + checkpoint.cell().x() + ", " + checkpoint.cell().y()
+                                + ") at line " + lineNumber);
+                    }
+                    checkpoints.add(checkpoint);
                 }
                 case "terrain" -> {
                     requireParts(parts, 4, "terrain <x> <y> OPEN|BOX|PIT|WALL", lineNumber);
-                    UiCell cell = parseCell(parts, width, height, lineNumber);
+                    UiCell cell = parseCell(parts[1], parts[2], width, height, lineNumber);
                     terrain.add(new TerrainEntry(cell, parseTerrain(parts[3], lineNumber)));
                 }
                 default -> throw new IllegalArgumentException(
@@ -174,6 +196,78 @@ final class ScenarioCodec {
         }
         return new Scenario(width, height, spawn, endpoint, List.copyOf(checkpoints),
                 movementMode, speed, diagonal, List.copyOf(terrain));
+    }
+
+    private static UiCheckpoint parseCheckpointBody(String[] parts, int width, int height,
+                                                    int lineNumber) {
+        UiCheckpointType type = parseCheckpointType(parts[1], lineNumber);
+        return switch (type) {
+            case MOVE, PATROL_MOVE, APPEAR_AT_POS -> {
+                requireParts(parts, 4, "checkpoint " + type.name() + " <x> <y>", lineNumber);
+                UiCell cell = parseCell(parts[2], parts[3], width, height, lineNumber);
+                yield switch (type) {
+                    case MOVE -> UiCheckpoint.move(cell);
+                    case PATROL_MOVE -> UiCheckpoint.patrolMove(cell);
+                    default -> UiCheckpoint.appearAt(cell);
+                };
+            }
+            case WAIT_FOR_SECONDS, WAIT_FOR_PLAY_TIME, WAIT_CURRENT_FRAGMENT_TIME,
+                    WAIT_CURRENT_WAVE_TIME -> {
+                requireParts(parts, 3, "checkpoint " + type.name() + " <seconds>", lineNumber);
+                float seconds = parseFloat(parts[2], lineNumber);
+                if (!Float.isFinite(seconds) || seconds < 0f) {
+                    throw new IllegalArgumentException(
+                            "Checkpoint seconds must be finite and non-negative at line " + lineNumber);
+                }
+                yield switch (type) {
+                    case WAIT_FOR_SECONDS -> UiCheckpoint.waitForSeconds(seconds);
+                    case WAIT_FOR_PLAY_TIME -> UiCheckpoint.waitForPlayTime(seconds);
+                    case WAIT_CURRENT_FRAGMENT_TIME -> UiCheckpoint.waitForFragmentTime(seconds);
+                    default -> UiCheckpoint.waitForWaveTime(seconds);
+                };
+            }
+            case WAIT_BOSSRUSH_WAVE -> {
+                requireParts(parts, 3, "checkpoint WAIT_BOSSRUSH_WAVE <area>", lineNumber);
+                int area = parseInteger(parts[2], "Area", lineNumber);
+                if (area < 0) {
+                    throw new IllegalArgumentException(
+                            "Checkpoint area must be non-negative at line " + lineNumber);
+                }
+                yield UiCheckpoint.waitForBossRushArea(area);
+            }
+            case DISAPPEAR, ALERT -> {
+                requireParts(parts, 2, "checkpoint " + type.name(), lineNumber);
+                yield type == UiCheckpointType.DISAPPEAR
+                        ? UiCheckpoint.disappear() : UiCheckpoint.alert();
+            }
+        };
+    }
+
+    private static UiCheckpointType parseCheckpointType(String token, int lineNumber) {
+        for (UiCheckpointType value : UiCheckpointType.values()) {
+            if (value.name().equals(token)) {
+                return value;
+            }
+        }
+        throw new IllegalArgumentException("Unknown checkpoint type '" + token + "' at line " + lineNumber);
+    }
+
+    private static boolean containsCell(List<UiCheckpoint> checkpoints, UiCell cell) {
+        for (UiCheckpoint checkpoint : checkpoints) {
+            if (cell.equals(checkpoint.cell())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isInteger(String token) {
+        try {
+            Integer.parseInt(token);
+            return true;
+        } catch (NumberFormatException error) {
+            return false;
+        }
     }
 
     private static void requireParts(String[] parts, int count, String usage, int lineNumber) {
@@ -205,9 +299,9 @@ final class ScenarioCodec {
         }
     }
 
-    private static UiCell parseCell(String[] parts, int width, int height, int lineNumber) {
-        int x = parseInteger(parts[1], "Coordinate", lineNumber);
-        int y = parseInteger(parts[2], "Coordinate", lineNumber);
+    private static UiCell parseCell(String xToken, String yToken, int width, int height, int lineNumber) {
+        int x = parseInteger(xToken, "Coordinate", lineNumber);
+        int y = parseInteger(yToken, "Coordinate", lineNumber);
         if (x < 0 || x >= width || y < 0 || y >= height) {
             throw new IllegalArgumentException(
                     "Cell (" + x + ", " + y + ") is outside the map at line " + lineNumber);

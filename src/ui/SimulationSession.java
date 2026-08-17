@@ -20,7 +20,7 @@ public final class SimulationSession {
     private UiTerrain[] terrain;
     private UiCell spawn;
     private UiCell endpoint;
-    private final List<UiCell> checkpoints = new ArrayList<>();
+    private final List<UiCheckpoint> checkpoints = new ArrayList<>();
     private UiMovementMode movementMode = UiMovementMode.GROUND;
     private float attributeSpeed = 1f;
     private boolean allowDiagonalMove = true;
@@ -42,7 +42,7 @@ public final class SimulationSession {
     private long globalFrame;
 
     private List<UiTerrain> cachedTerrainView;
-    private List<UiPoint> cachedCheckpointPoints;
+    private List<UiCheckpoint> cachedCheckpointView;
     private PathMap cachedSegmentSource;
     private List<UiPathSegment> cachedSegments = List.of();
 
@@ -68,8 +68,8 @@ public final class SimulationSession {
         initializeScenario(12, 8);
         spawn = new UiCell(1, 1);
         endpoint = new UiCell(10, 6);
-        checkpoints.add(new UiCell(5, 1));
-        checkpoints.add(new UiCell(5, 5));
+        checkpoints.add(UiCheckpoint.move(new UiCell(5, 1)));
+        checkpoints.add(UiCheckpoint.move(new UiCell(5, 5)));
         setTerrainDirect(new UiCell(7, 3), UiTerrain.BOX);
         setTerrainDirect(new UiCell(7, 4), UiTerrain.PIT);
         setTerrainDirect(new UiCell(7, 5), UiTerrain.WALL);
@@ -111,29 +111,104 @@ public final class SimulationSession {
         rebuildSimulator();
     }
 
-    public synchronized void addCheckpoint(UiCell cell) {
-        requireInside(cell);
-        if (checkpoints.contains(cell)) {
+    /**
+     * Appends a checkpoint after validating the resulting route. Route rules
+     * (for example DISAPPEAR needing a later APPEAR_AT_POS) reject invalid
+     * edits with an exception before anything is changed.
+     */
+    public synchronized void addCheckpoint(UiCheckpoint checkpoint) {
+        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        next.add(checkpoint);
+        commitCheckpoints(next);
+    }
+
+    /** Inserts a checkpoint before the given index; pass size() to append. */
+    public synchronized void insertCheckpointBefore(int index, UiCheckpoint checkpoint) {
+        if (index < 0 || index > checkpoints.size()) {
+            throw new IllegalArgumentException("Insertion index is outside the checkpoint list");
+        }
+        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        next.add(index, checkpoint);
+        commitCheckpoints(next);
+    }
+
+    /** Replaces a checkpoint's type and parameters, keeping its map cell when the new type uses one. */
+    public synchronized void updateCheckpoint(int index, UiCheckpointType type, float value, int area) {
+        requireCheckpointIndex(index);
+        UiCheckpoint previous = checkpoints.get(index);
+        if (type.hasPoint() && previous.cell() == null) {
+            throw new IllegalArgumentException("Checkpoint " + index
+                    + " has no map cell to keep for " + type.label());
+        }
+        UiCheckpoint updated = new UiCheckpoint(type, previous.cell(), value, area);
+        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        next.set(index, updated);
+        commitCheckpoints(next);
+    }
+
+    /** Moves a checkpoint one slot up (-1) or down (+1); out-of-range moves are ignored. */
+    public synchronized void moveCheckpoint(int index, int offset) {
+        requireCheckpointIndex(index);
+        int target = index + offset;
+        if (target < 0 || target >= checkpoints.size()) {
             return;
         }
-        checkpoints.add(cell);
-        ensureOpen(cell);
-        rebuildSimulator();
+        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        UiCheckpoint moved = next.remove(index);
+        next.add(target, moved);
+        commitCheckpoints(next);
     }
 
     public synchronized void removeCheckpoint(int index) {
         if (index < 0 || index >= checkpoints.size()) {
             return;
         }
-        checkpoints.remove(index);
-        rebuildSimulator();
+        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        next.remove(index);
+        commitCheckpoints(next);
     }
 
     public synchronized void clearCheckpoints() {
         if (checkpoints.isEmpty()) {
             return;
         }
+        commitCheckpoints(new ArrayList<>());
+    }
+
+    private void requireCheckpointIndex(int index) {
+        if (index < 0 || index >= checkpoints.size()) {
+            throw new IllegalArgumentException("Checkpoint index is outside the list");
+        }
+    }
+
+    /**
+     * Validates the candidate list against the current spawn, endpoint, and
+     * movement settings, then commits it. A probe Route performs the same
+     * validation the core performs, so an invalid edit is rejected without
+     * touching the current scenario.
+     */
+    private void commitCheckpoints(List<UiCheckpoint> next) {
+        for (int index = 0; index < next.size(); index++) {
+            UiCell cell = next.get(index).cell();
+            if (cell == null) {
+                continue;
+            }
+            for (int other = index + 1; other < next.size(); other++) {
+                if (cell.equals(next.get(other).cell())) {
+                    throw new IllegalArgumentException("Cell (" + cell.x() + ", " + cell.y()
+                            + ") already has a checkpoint");
+                }
+            }
+        }
+        new Route(toCorePoint(spawn.center()), toCorePoint(endpoint.center()),
+                toCoreCheckpoints(next), coreMovementMode(), allowDiagonalMove, true, false);
         checkpoints.clear();
+        checkpoints.addAll(next);
+        for (UiCheckpoint checkpoint : checkpoints) {
+            if (checkpoint.cell() != null) {
+                ensureOpen(checkpoint.cell());
+            }
+        }
         rebuildSimulator();
     }
 
@@ -222,7 +297,7 @@ public final class SimulationSession {
                 terrainView(),
                 spawn.center(),
                 endpoint.center(),
-                checkpointPoints(),
+                checkpointList(),
                 movementMode,
                 attributeSpeed,
                 allowDiagonalMove,
@@ -375,6 +450,11 @@ public final class SimulationSession {
                         + ") conflicts with a route point");
             }
         }
+        MovementMode parsedMovementMode =
+                parsed.movementMode() == UiMovementMode.GROUND ? MovementMode.GROUND : MovementMode.FLYING;
+        new Route(toCorePoint(parsed.spawn().center()), toCorePoint(parsed.endpoint().center()),
+                toCoreCheckpoints(new ArrayList<>(parsed.checkpoints())), parsedMovementMode,
+                parsed.allowDiagonalMove(), true, false);
         initializeScenario(parsed.width(), parsed.height());
         spawn = parsed.spawn();
         endpoint = parsed.endpoint();
@@ -424,8 +504,39 @@ public final class SimulationSession {
     }
 
     private static boolean conflictsWithRoute(UiCell cell, ScenarioCodec.Scenario parsed) {
-        return cell.equals(parsed.spawn()) || cell.equals(parsed.endpoint())
-                || parsed.checkpoints().contains(cell);
+        if (cell.equals(parsed.spawn()) || cell.equals(parsed.endpoint())) {
+            return true;
+        }
+        for (UiCheckpoint checkpoint : parsed.checkpoints()) {
+            if (cell.equals(checkpoint.cell())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<Checkpoint> toCoreCheckpoints(List<UiCheckpoint> checkpoints) {
+        List<Checkpoint> result = new ArrayList<>(checkpoints.size());
+        for (UiCheckpoint checkpoint : checkpoints) {
+            result.add(toCoreCheckpoint(checkpoint));
+        }
+        return result;
+    }
+
+    private static Checkpoint toCoreCheckpoint(UiCheckpoint checkpoint) {
+        Vec2f point = checkpoint.cell() == null ? null : toCorePoint(checkpoint.cell().center());
+        return switch (checkpoint.type().core()) {
+            case MOVE -> Checkpoint.move(point);
+            case PATROL_MOVE -> Checkpoint.patrolMove(point);
+            case APPEAR_AT_POS -> Checkpoint.appearAt(point);
+            case WAIT_FOR_SECONDS -> Checkpoint.waitForSeconds(checkpoint.value());
+            case WAIT_FOR_PLAY_TIME -> Checkpoint.waitForPlayTime(checkpoint.value());
+            case WAIT_CURRENT_FRAGMENT_TIME -> Checkpoint.waitForFragmentTime(checkpoint.value());
+            case WAIT_CURRENT_WAVE_TIME -> Checkpoint.waitForWaveTime(checkpoint.value());
+            case WAIT_BOSSRUSH_WAVE -> Checkpoint.waitForBossRushArea(checkpoint.area());
+            case DISAPPEAR -> Checkpoint.disappear();
+            case ALERT -> Checkpoint.alert();
+        };
     }
 
     private void initializeScenario(int newWidth, int newHeight) {
@@ -461,14 +572,10 @@ public final class SimulationSession {
             }
         }
 
-        List<Checkpoint> routeCheckpoints = new ArrayList<>(checkpoints.size());
-        for (UiCell checkpoint : checkpoints) {
-            routeCheckpoints.add(Checkpoint.move(toCorePoint(checkpoint.center())));
-        }
         route = new Route(
                 toCorePoint(spawn.center()),
                 toCorePoint(endpoint.center()),
-                routeCheckpoints,
+                toCoreCheckpoints(checkpoints),
                 coreMovementMode(),
                 allowDiagonalMove,
                 true,
@@ -504,7 +611,7 @@ public final class SimulationSession {
 
     private void invalidateScenarioCaches() {
         cachedTerrainView = null;
-        cachedCheckpointPoints = null;
+        cachedCheckpointView = null;
         cachedSegmentSource = null;
         cachedSegments = List.of();
     }
@@ -558,19 +665,23 @@ public final class SimulationSession {
         return cachedTerrainView;
     }
 
-    private List<UiPoint> checkpointPoints() {
-        if (cachedCheckpointPoints == null) {
-            List<UiPoint> result = new ArrayList<>(checkpoints.size());
-            for (UiCell checkpoint : checkpoints) {
-                result.add(checkpoint.center());
-            }
-            cachedCheckpointPoints = List.copyOf(result);
+    private List<UiCheckpoint> checkpointList() {
+        if (cachedCheckpointView == null) {
+            cachedCheckpointView = List.copyOf(checkpoints);
         }
-        return cachedCheckpointPoints;
+        return cachedCheckpointView;
     }
 
     private boolean isRouteCell(UiCell cell) {
-        return cell.equals(spawn) || cell.equals(endpoint) || checkpoints.contains(cell);
+        if (cell.equals(spawn) || cell.equals(endpoint)) {
+            return true;
+        }
+        for (UiCheckpoint checkpoint : checkpoints) {
+            if (cell.equals(checkpoint.cell())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void ensureOpen(UiCell cell) {

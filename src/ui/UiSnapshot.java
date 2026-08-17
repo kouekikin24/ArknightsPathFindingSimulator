@@ -7,7 +7,7 @@ public record UiSnapshot(
         List<UiTerrain> terrain,
         UiPoint spawn,
         UiPoint endpoint,
-        List<UiPoint> checkpoints,
+        List<UiCheckpoint> checkpoints,
         UiMovementMode movementMode,
         float attributeSpeed,
         boolean allowDiagonalMove,

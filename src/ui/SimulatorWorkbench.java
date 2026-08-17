@@ -95,6 +95,10 @@ public final class SimulatorWorkbench extends JFrame {
     private final JComboBox<UiMovementMode> movementModeBox = new JComboBox<>(UiMovementMode.values());
     private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, 10.0d, 0.1d));
     private final JCheckBox diagonalToggle = new JCheckBox("允许斜向连线", true);
+    private final JComboBox<UiCheckpointType> checkpointTypeBox = new JComboBox<>(UiCheckpointType.values());
+    private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 3600.0d, 0.1d));
+    private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 100, 1));
+    private final JButton addCheckpointButton = new JButton("添加");
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
     private final JList<String> checkpointList = new JList<>(checkpointModel);
 
@@ -350,31 +354,95 @@ public final class SimulatorWorkbench extends JFrame {
     private JPanel createCheckpointSection() {
         JPanel section = section("检查点");
         section.setLayout(new BorderLayout(5, 5));
+
+        JPanel editor = new JPanel(new GridBagLayout());
+        editor.setOpaque(false);
+        GridBagConstraints c = baseConstraints();
+        c.gridx = 0;
+        c.gridy = 0;
+        c.weightx = 0d;
+        editor.add(new JLabel("类型"), c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        checkpointTypeBox.setRenderer(new javax.swing.DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value,
+                                                          int index, boolean isSelected,
+                                                          boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof UiCheckpointType type) {
+                    setText(type.label());
+                }
+                return this;
+            }
+        });
+        editor.add(checkpointTypeBox, c);
+        c.gridx = 0;
+        c.gridy = 1;
+        c.weightx = 0d;
+        editor.add(new JLabel("参数"), c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        JPanel parameters = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        parameters.setOpaque(false);
+        parameters.add(checkpointSecondsSpinner);
+        parameters.add(checkpointAreaSpinner);
+        editor.add(parameters, c);
+        section.add(editor, BorderLayout.NORTH);
+
         checkpointList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         checkpointList.setVisibleRowCount(5);
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
+
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         actions.setOpaque(false);
+        addCheckpointButton.setToolTipText("加入列表（选中项之前插入，未选中则加到末尾）");
+        addCheckpointButton.addActionListener(event -> addCheckpointFromPanel());
+        actions.add(addCheckpointButton);
+        JButton update = new JButton("更新");
+        update.setToolTipText("把选中的检查点改为当前类型和参数");
+        update.addActionListener(event -> updateSelectedCheckpoint());
+        actions.add(update);
+        JButton up = iconButton("↑", "上移选中的检查点");
+        up.addActionListener(event -> moveSelectedCheckpoint(-1));
+        actions.add(up);
+        JButton down = iconButton("↓", "下移选中的检查点");
+        down.addActionListener(event -> moveSelectedCheckpoint(1));
+        actions.add(down);
         JButton remove = iconButton("−", "删除选中的检查点");
         remove.addActionListener(event -> {
             int index = checkpointList.getSelectedIndex();
-            if (index >= 0) {
-                stopPlayback();
-                invalidateSeek();
-                session.removeCheckpoint(index);
-                refresh(session.snapshot());
+            if (index < 0) {
+                return;
             }
-        });
-        JButton clear = iconButton("×", "清空检查点");
-        clear.addActionListener(event -> {
+            try {
+                session.removeCheckpoint(index);
+            } catch (IllegalArgumentException error) {
+                footerStatus.setText("无法删除：" + error.getMessage());
+                return;
+            }
             stopPlayback();
             invalidateSeek();
-            session.clearCheckpoints();
             refresh(session.snapshot());
         });
         actions.add(remove);
+        JButton clear = iconButton("×", "清空检查点");
+        clear.addActionListener(event -> {
+            try {
+                session.clearCheckpoints();
+            } catch (IllegalArgumentException error) {
+                footerStatus.setText("无法清空：" + error.getMessage());
+                return;
+            }
+            stopPlayback();
+            invalidateSeek();
+            refresh(session.snapshot());
+        });
         actions.add(clear);
         section.add(actions, BorderLayout.SOUTH);
+
+        checkpointTypeBox.addActionListener(event -> refreshCheckpointControls());
+        refreshCheckpointControls();
         return section;
     }
 
@@ -420,32 +488,129 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void applyEditorTool(UiCell cell) {
-        boolean applied = switch (selectedTool) {
-            case OPEN -> session.setTerrain(cell, UiTerrain.OPEN);
-            case BOX -> session.setTerrain(cell, UiTerrain.BOX);
-            case PIT -> session.setTerrain(cell, UiTerrain.PIT);
-            case WALL -> session.setTerrain(cell, UiTerrain.WALL);
+        String error = switch (selectedTool) {
+            case OPEN -> terrainError(cell, UiTerrain.OPEN);
+            case BOX -> terrainError(cell, UiTerrain.BOX);
+            case PIT -> terrainError(cell, UiTerrain.PIT);
+            case WALL -> terrainError(cell, UiTerrain.WALL);
             case SPAWN -> {
                 session.placeSpawn(cell);
-                yield true;
+                yield null;
             }
             case ENDPOINT -> {
                 session.placeEndpoint(cell);
-                yield true;
+                yield null;
             }
-            case CHECKPOINT -> {
-                session.addCheckpoint(cell);
-                yield true;
-            }
-            case BROWSE -> true;
+            case CHECKPOINT -> checkpointError(cell);
+            case BROWSE -> null;
         };
-        if (!applied) {
-            footerStatus.setText("该格已被起点、终点或检查点占用，不能放置地形");
+        if (error != null) {
+            footerStatus.setText(error);
             return;
         }
         stopPlayback();
         invalidateSeek();
         refresh(session.snapshot());
+    }
+
+    private String terrainError(UiCell cell, UiTerrain value) {
+        return session.setTerrain(cell, value) ? null
+                : "该格已被起点、终点或检查点占用，不能放置地形";
+    }
+
+    private String checkpointError(UiCell cell) {
+        UiCheckpointType type = selectedCheckpointType();
+        if (!type.hasPoint()) {
+            return type.label() + "没有坐标，请用检查点面板的“添加”按钮";
+        }
+        try {
+            session.addCheckpoint(newCheckpointOfType(type, cell));
+        } catch (IllegalArgumentException failure) {
+            return "无法添加：" + failure.getMessage();
+        }
+        return null;
+    }
+
+    private UiCheckpointType selectedCheckpointType() {
+        UiCheckpointType type = (UiCheckpointType) checkpointTypeBox.getSelectedItem();
+        return type == null ? UiCheckpointType.MOVE : type;
+    }
+
+    private UiCheckpoint newCheckpointOfType(UiCheckpointType type, UiCell cell) {
+        float seconds = ((Number) checkpointSecondsSpinner.getValue()).floatValue();
+        int area = ((Number) checkpointAreaSpinner.getValue()).intValue();
+        return switch (type) {
+            case MOVE -> UiCheckpoint.move(cell);
+            case PATROL_MOVE -> UiCheckpoint.patrolMove(cell);
+            case APPEAR_AT_POS -> UiCheckpoint.appearAt(cell);
+            case WAIT_FOR_SECONDS -> UiCheckpoint.waitForSeconds(seconds);
+            case WAIT_FOR_PLAY_TIME -> UiCheckpoint.waitForPlayTime(seconds);
+            case WAIT_CURRENT_FRAGMENT_TIME -> UiCheckpoint.waitForFragmentTime(seconds);
+            case WAIT_CURRENT_WAVE_TIME -> UiCheckpoint.waitForWaveTime(seconds);
+            case WAIT_BOSSRUSH_WAVE -> UiCheckpoint.waitForBossRushArea(area);
+            case DISAPPEAR -> UiCheckpoint.disappear();
+            case ALERT -> UiCheckpoint.alert();
+        };
+    }
+
+    private void addCheckpointFromPanel() {
+        UiCheckpointType type = selectedCheckpointType();
+        if (type.hasPoint()) {
+            footerStatus.setText("坐标类检查点请在地图上用 + 工具放置");
+            return;
+        }
+        int index = checkpointList.getSelectedIndex();
+        try {
+            if (index >= 0) {
+                session.insertCheckpointBefore(index, newCheckpointOfType(type, null));
+            } else {
+                session.addCheckpoint(newCheckpointOfType(type, null));
+            }
+        } catch (IllegalArgumentException error) {
+            footerStatus.setText("无法添加：" + error.getMessage());
+            return;
+        }
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshot());
+        checkpointList.setSelectedIndex(index >= 0 ? index : checkpointModel.size() - 1);
+    }
+
+    private void updateSelectedCheckpoint() {
+        int index = checkpointList.getSelectedIndex();
+        if (index < 0) {
+            footerStatus.setText("请先在列表中选择一个检查点");
+            return;
+        }
+        try {
+            session.updateCheckpoint(index, selectedCheckpointType(),
+                    ((Number) checkpointSecondsSpinner.getValue()).floatValue(),
+                    ((Number) checkpointAreaSpinner.getValue()).intValue());
+        } catch (IllegalArgumentException error) {
+            footerStatus.setText("无法更新：" + error.getMessage());
+            return;
+        }
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshot());
+        checkpointList.setSelectedIndex(index);
+    }
+
+    private void moveSelectedCheckpoint(int offset) {
+        int index = checkpointList.getSelectedIndex();
+        if (index < 0) {
+            return;
+        }
+        try {
+            session.moveCheckpoint(index, offset);
+        } catch (IllegalArgumentException error) {
+            footerStatus.setText("无法移动：" + error.getMessage());
+            return;
+        }
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshot());
+        checkpointList.setSelectedIndex(Math.max(0, Math.min(checkpointModel.size() - 1, index + offset)));
     }
 
     private void togglePlayback() {
@@ -642,6 +807,7 @@ public final class SimulatorWorkbench extends JFrame {
             statusValue.setText(snapshot.transition().isBlank() ? "-" : snapshot.transition());
             footerStatus.setText(statusLabel(snapshot));
             refreshCheckpointList(snapshot);
+            refreshCheckpointControls();
             refreshZoomLabel();
         } finally {
             refreshing = false;
@@ -709,12 +875,41 @@ public final class SimulatorWorkbench extends JFrame {
     private void refreshCheckpointList(UiSnapshot snapshot) {
         checkpointModel.clear();
         for (int index = 0; index < snapshot.checkpoints().size(); index++) {
-            UiPoint point = snapshot.checkpoints().get(index);
-            checkpointModel.addElement(String.format(Locale.ROOT, "%02d   (%.1f, %.1f)",
-                    index + 1, point.x(), point.y()));
+            UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
+            checkpointModel.addElement(String.format(Locale.ROOT, "%02d  %s %s",
+                    index + 1, checkpoint.type().label(), checkpointDetail(checkpoint)).strip());
         }
         if (snapshot.activeCheckpoint() >= 0 && snapshot.activeCheckpoint() < checkpointModel.size()) {
             checkpointList.setSelectedIndex(snapshot.activeCheckpoint());
+        }
+    }
+
+    private static String checkpointDetail(UiCheckpoint checkpoint) {
+        if (checkpoint.cell() != null) {
+            return String.format(Locale.ROOT, "(%d, %d)",
+                    checkpoint.cell().x(), checkpoint.cell().y());
+        }
+        if (checkpoint.type().usesSeconds()) {
+            return String.format(Locale.ROOT, "%.1f s", checkpoint.value());
+        }
+        if (checkpoint.type().usesArea()) {
+            return checkpoint.area() + " 区";
+        }
+        return "";
+    }
+
+    private void refreshCheckpointControls() {
+        UiCheckpointType type = selectedCheckpointType();
+        checkpointSecondsSpinner.setVisible(type.usesSeconds());
+        checkpointAreaSpinner.setVisible(type.usesArea());
+        addCheckpointButton.setEnabled(!type.hasPoint());
+        addCheckpointButton.setToolTipText(type.hasPoint()
+                ? "坐标类检查点请在地图上用 + 工具放置"
+                : "加入列表（选中项之前插入，未选中则加到末尾）");
+        java.awt.Container parameters = checkpointSecondsSpinner.getParent();
+        if (parameters != null) {
+            parameters.revalidate();
+            parameters.repaint();
         }
     }
 

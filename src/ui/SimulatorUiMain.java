@@ -54,6 +54,7 @@ public final class SimulatorUiMain {
         verifyPortalTrajectoryBreak();
         verifyTerminalFlagAndTerrainRejection();
         verifyScenarioRoundTrip();
+        verifyCheckpointEditing();
         System.out.println("UI session verification passed.");
     }
 
@@ -263,8 +264,7 @@ public final class SimulatorUiMain {
         }
     }
 
-    private static void verifyScenarioRoundTrip() {
-        SimulationSession original = new SimulationSession();
+    private static void verifyScenarioRoundTrip() {        SimulationSession original = new SimulationSession();
         String text = original.exportScenario();
         SimulationSession imported = new SimulationSession();
         imported.newScenario(6, 5);
@@ -304,6 +304,70 @@ public final class SimulatorUiMain {
         } catch (IllegalArgumentException expectedError) {
             if (!expectedError.getMessage().contains("between 2")) {
                 throw new IllegalStateException("Undersized map error was not reported");
+            }
+        }
+    }
+
+    private static void verifyCheckpointEditing() {
+        SimulationSession waitSession = new SimulationSession();
+        waitSession.newScenario(6, 2);
+        waitSession.addCheckpoint(UiCheckpoint.waitForSeconds(0.1f));
+        for (int frame = 0; frame < 3; frame++) {
+            waitSession.tick();
+        }
+        if (waitSession.snapshot().activeCheckpoint() != 0) {
+            throw new IllegalStateException("Wait checkpoint completed before its duration");
+        }
+        waitSession.tick();
+        if (waitSession.snapshot().activeCheckpoint() != 1) {
+            throw new IllegalStateException("Wait checkpoint did not advance after its duration");
+        }
+
+        SimulationSession patrolSession = new SimulationSession();
+        patrolSession.newScenario(8, 3);
+        patrolSession.addCheckpoint(UiCheckpoint.move(new UiCell(2, 1)));
+        patrolSession.addCheckpoint(UiCheckpoint.patrolMove(new UiCell(5, 1)));
+        for (int frame = 0; frame < 600; frame++) {
+            patrolSession.tick();
+            if (patrolSession.snapshot().activeCheckpoint() == 0 && frame > 200) {
+                break;
+            }
+        }
+        if (patrolSession.snapshot().activeCheckpoint() != 0 || patrolSession.isTerminal()) {
+            throw new IllegalStateException("Terminal patrol loop did not return to checkpoint zero");
+        }
+
+        SimulationSession portalSession = new SimulationSession();
+        portalSession.newScenario(8, 3);
+        portalSession.addCheckpoint(UiCheckpoint.appearAt(new UiCell(6, 1)));
+        portalSession.insertCheckpointBefore(0, UiCheckpoint.disappear());
+        UiSnapshot portalFrame = portalSession.tick();
+        if (!portalFrame.transition().contains("APPEAR_AT_POS")
+                || !portalFrame.trajectoryBreak()
+                || Math.abs(portalFrame.entityPosition().x() - 6.5f) > 0.001f) {
+            throw new IllegalStateException("Portal checkpoint flow did not relocate and break the trajectory");
+        }
+        String portalText = portalSession.exportScenario();
+        SimulationSession portalImported = new SimulationSession();
+        portalImported.importScenario(portalText);
+        if (!portalImported.exportScenario().equals(portalText)) {
+            throw new IllegalStateException("Typed checkpoint round trip changed the exported text");
+        }
+
+        try {
+            new SimulationSession().addCheckpoint(UiCheckpoint.disappear());
+            throw new IllegalStateException("Adding a terminal DISAPPEAR was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("must be followed by")) {
+                throw new IllegalStateException("Terminal DISAPPEAR error was not reported");
+            }
+        }
+        try {
+            portalSession.removeCheckpoint(1);
+            throw new IllegalStateException("Removing the portal appearance was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("must be followed by")) {
+                throw new IllegalStateException("Portal removal error was not reported");
             }
         }
     }
