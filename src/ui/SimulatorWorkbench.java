@@ -6,6 +6,7 @@ import javax.swing.Icon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -38,6 +39,11 @@ import java.awt.Insets;
 import java.awt.Point;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -184,6 +190,16 @@ public final class SimulatorWorkbench extends JFrame {
         showTrajectoryToggle.setToolTipText("显示已生成帧的实际敌人轨迹");
         showTrajectoryToggle.addActionListener(event -> canvas.setShowTrajectory(showTrajectoryToggle.isSelected()));
         toolbar.add(showTrajectoryToggle);
+        toolbar.addSeparator(new Dimension(10, 1));
+        JButton exportScenarioButton = iconButton("导出场景", "把当前地图与路线保存为可导入的文本文件");
+        exportScenarioButton.addActionListener(event -> exportScenarioFile());
+        toolbar.add(exportScenarioButton);
+        JButton importScenarioButton = iconButton("导入场景", "从文本文件载入地图与路线");
+        importScenarioButton.addActionListener(event -> importScenarioFile());
+        toolbar.add(importScenarioButton);
+        JButton exportTraceButton = iconButton("导出轨迹", "把已生成帧导出为逐帧 CSV");
+        exportTraceButton.addActionListener(event -> exportTraceFile());
+        toolbar.add(exportTraceButton);
         return toolbar;
     }
 
@@ -486,6 +502,54 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         requestSeek(frame);
+    }
+
+    private void exportScenarioFile() {
+        writeChosenFile("scenario.txt", session.exportScenario(), "场景已导出");
+    }
+
+    private void exportTraceFile() {
+        writeChosenFile("trace.csv", session.exportTraceCsv(), "轨迹已导出");
+    }
+
+    private void writeChosenFile(String suggestedName, String content, String successLabel) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setSelectedFile(new File(suggestedName));
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path target = chooser.getSelectedFile().toPath();
+        try {
+            Files.writeString(target, content, StandardCharsets.UTF_8);
+        } catch (IOException error) {
+            footerStatus.setText("导出失败：" + error.getMessage());
+            return;
+        }
+        footerStatus.setText(successLabel + "：" + target.getFileName());
+    }
+
+    private void importScenarioFile() {
+        JFileChooser chooser = new JFileChooser();
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        String text;
+        try {
+            text = Files.readString(chooser.getSelectedFile().toPath(), StandardCharsets.UTF_8);
+        } catch (IOException error) {
+            footerStatus.setText("导入失败：" + error.getMessage());
+            return;
+        }
+        try {
+            session.importScenario(text);
+        } catch (IllegalArgumentException error) {
+            footerStatus.setText("导入失败：" + error.getMessage());
+            return;
+        }
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshot());
+        requestMapFit();
     }
 
     private void requestSeek(long frame) {

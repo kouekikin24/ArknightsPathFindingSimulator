@@ -355,6 +355,79 @@ public final class SimulationSession {
         return SimulationTime.formatFrame(frame);
     }
 
+    /** Serializes the current scenario (map, route, movement settings) as importable text. */
+    public synchronized String exportScenario() {
+        return ScenarioCodec.format(width, height, terrainView(), spawn, endpoint,
+                checkpoints, movementMode, attributeSpeed, allowDiagonalMove);
+    }
+
+    /**
+     * Replaces the current scenario with text produced by exportScenario().
+     * All validation happens before any state changes, so a rejected import
+     * leaves the current scenario untouched.
+     */
+    public synchronized void importScenario(String text) {
+        ScenarioCodec.Scenario parsed = ScenarioCodec.parse(text);
+        for (ScenarioCodec.TerrainEntry entry : parsed.terrain()) {
+            if (entry.terrain() != UiTerrain.OPEN && conflictsWithRoute(entry.cell(), parsed)) {
+                throw new IllegalArgumentException("Imported terrain at ("
+                        + entry.cell().x() + ", " + entry.cell().y()
+                        + ") conflicts with a route point");
+            }
+        }
+        initializeScenario(parsed.width(), parsed.height());
+        spawn = parsed.spawn();
+        endpoint = parsed.endpoint();
+        checkpoints.clear();
+        checkpoints.addAll(parsed.checkpoints());
+        movementMode = parsed.movementMode();
+        attributeSpeed = parsed.speed();
+        allowDiagonalMove = parsed.allowDiagonalMove();
+        for (ScenarioCodec.TerrainEntry entry : parsed.terrain()) {
+            setTerrainDirect(entry.cell(), entry.terrain());
+        }
+        rebuildSimulator();
+    }
+
+    /** One CSV row per generated frame, including S[0]. */
+    public synchronized String exportTraceCsv() {
+        StringBuilder csv = new StringBuilder();
+        csv.append("frame,mode,checkpoint,completed,entity_x,entity_y,cursor_x,cursor_y,")
+                .append("velocity_x,velocity_y,avoidance_x,avoidance_y,transition\n");
+        for (UiSnapshot snapshot : timeline.asList()) {
+            appendSnapshotRow(csv, snapshot);
+        }
+        return csv.toString();
+    }
+
+    private static void appendSnapshotRow(StringBuilder csv, UiSnapshot snapshot) {
+        csv.append(snapshot.frame()).append(',')
+                .append(csvField(snapshot.unitMode())).append(',')
+                .append(snapshot.activeCheckpoint()).append(',')
+                .append(snapshot.completed()).append(',')
+                .append(Float.toString(snapshot.entityPosition().x())).append(',')
+                .append(Float.toString(snapshot.entityPosition().y())).append(',')
+                .append(Float.toString(snapshot.cursorPosition().x())).append(',')
+                .append(Float.toString(snapshot.cursorPosition().y())).append(',')
+                .append(Float.toString(snapshot.inertiaVelocity().x())).append(',')
+                .append(Float.toString(snapshot.inertiaVelocity().y())).append(',')
+                .append(Float.toString(snapshot.avoidance().x())).append(',')
+                .append(Float.toString(snapshot.avoidance().y())).append(',')
+                .append(csvField(snapshot.transition())).append('\n');
+    }
+
+    private static String csvField(String value) {
+        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0) {
+            return '"' + value.replace("\"", "\"\"") + '"';
+        }
+        return value;
+    }
+
+    private static boolean conflictsWithRoute(UiCell cell, ScenarioCodec.Scenario parsed) {
+        return cell.equals(parsed.spawn()) || cell.equals(parsed.endpoint())
+                || parsed.checkpoints().contains(cell);
+    }
+
     private void initializeScenario(int newWidth, int newHeight) {
         if (newWidth < MINIMUM_DIMENSION || newHeight < MINIMUM_DIMENSION) {
             throw new IllegalArgumentException("Map dimensions must be at least " + MINIMUM_DIMENSION);

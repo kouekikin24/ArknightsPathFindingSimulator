@@ -53,6 +53,7 @@ public final class SimulatorUiMain {
         verifyTimeParsing();
         verifyPortalTrajectoryBreak();
         verifyTerminalFlagAndTerrainRejection();
+        verifyScenarioRoundTrip();
         System.out.println("UI session verification passed.");
     }
 
@@ -246,8 +247,7 @@ public final class SimulatorUiMain {
         }
     }
 
-    private static void verifyTerminalFlagAndTerrainRejection() {
-        SimulationSession session = new SimulationSession();
+    private static void verifyTerminalFlagAndTerrainRejection() {        SimulationSession session = new SimulationSession();
         session.newScenario(4, 3);
         if (!session.setTerrain(new UiCell(1, 0), UiTerrain.WALL)
                 || !session.setTerrain(new UiCell(1, 1), UiTerrain.WALL)
@@ -260,6 +260,51 @@ public final class SimulatorUiMain {
         UiSnapshot blocked = session.tick();
         if (!blocked.terminal() || !"阻挡".equals(blocked.unitMode())) {
             throw new IllegalStateException("The terminal flag did not reflect the blocked mode");
+        }
+    }
+
+    private static void verifyScenarioRoundTrip() {
+        SimulationSession original = new SimulationSession();
+        String text = original.exportScenario();
+        SimulationSession imported = new SimulationSession();
+        imported.newScenario(6, 5);
+        imported.importScenario(text);
+        if (!imported.exportScenario().equals(text)) {
+            throw new IllegalStateException("Scenario round trip changed the exported text");
+        }
+        UiSnapshot expected = null;
+        UiSnapshot actual = null;
+        for (int frame = 0; frame < 24; frame++) {
+            expected = frame == 0 ? original.resetSimulation() : original.tick();
+            actual = frame == 0 ? imported.snapshot() : imported.tick();
+            assertFloatBits(expected.entityPosition(), actual.entityPosition(), "round-trip entity position");
+            assertFloatBits(expected.cursorPosition(), actual.cursorPosition(), "round-trip cursor position");
+            assertFloatBits(expected.inertiaVelocity(), actual.inertiaVelocity(), "round-trip inertia");
+        }
+        if (expected == null || expected.frame() != 23) {
+            throw new IllegalStateException("Round-trip replay did not advance through frame 23");
+        }
+        String csv = original.exportTraceCsv();
+        String[] rows = csv.split("\\R");
+        if (!rows[0].startsWith("frame,") || rows.length != original.generatedStates().size() + 1
+                || !rows[rows.length - 1].startsWith("23,")) {
+            throw new IllegalStateException("Trace CSV did not contain one row per generated frame");
+        }
+        try {
+            new SimulationSession().importScenario(text.replace("movement GROUND", "movement HOVER"));
+            throw new IllegalStateException("Import accepted an unknown movement mode");
+        } catch (IllegalArgumentException expectedError) {
+            if (!expectedError.getMessage().contains("Unknown movement mode")) {
+                throw new IllegalStateException("Unknown movement mode error was not reported");
+            }
+        }
+        try {
+            new SimulationSession().importScenario(text.replace("map 12 8", "map 1 1"));
+            throw new IllegalStateException("Import accepted an undersized map");
+        } catch (IllegalArgumentException expectedError) {
+            if (!expectedError.getMessage().contains("between 2")) {
+                throw new IllegalStateException("Undersized map error was not reported");
+            }
         }
     }
 
