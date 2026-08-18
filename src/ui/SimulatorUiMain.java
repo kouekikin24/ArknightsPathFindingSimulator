@@ -56,6 +56,7 @@ public final class SimulatorUiMain {
         verifyScenarioRoundTrip();
         verifyCheckpointEditing();
         verifyCombatStateInjection();
+        verifyMultiUnit();
         System.out.println("UI session verification passed.");
     }
 
@@ -66,18 +67,18 @@ public final class SimulatorUiMain {
             expected = frame == 0 ? seekSession.snapshot() : seekSession.tick();
         }
         SimulationSession replay = new SimulationSession();
-        UiSnapshot actual = replay.seekFrame(18);
-        assertFloatBits(expected.entityPosition(), actual.entityPosition(), "entityPosition");
-        assertFloatBits(expected.cursorPosition(), actual.cursorPosition(), "cursorPosition");
-        assertFloatBits(expected.inertiaVelocity(), actual.inertiaVelocity(), "inertiaVelocity");
+        UiFrame actual = replay.seekFrame(18);
+        assertFloatBits(expected.entityPosition(), actual.units().get(0).entityPosition(), "entityPosition");
+        assertFloatBits(expected.cursorPosition(), actual.units().get(0).cursorPosition(), "cursorPosition");
+        assertFloatBits(expected.inertiaVelocity(), actual.units().get(0).inertiaVelocity(), "inertiaVelocity");
         if (actual.frame() != 18 || !SimulationSession.formatFrameTime(18).equals("18 / 30 s")) {
             throw new IllegalStateException("Exact frame seek/time display failed");
         }
-        List<UiSnapshot> states = replay.generatedStates();
+        List<UiFrame> states = replay.generatedStates();
         if (states.size() != 19 || states.get(0).frame() != 0 || states.get(18).frame() != 18) {
             throw new IllegalStateException("Timeline does not contain S[0]..S[n]");
         }
-        UiSnapshot rewind = replay.seekFrame(3);
+        UiFrame rewind = replay.seekFrame(3);
         if (rewind.frame() != 3 || replay.generatedStates().size() != 19
                 || replay.generatedStateAtFrame(18) == null) {
             throw new IllegalStateException("Backward seek discarded confirmed timeline states");
@@ -287,8 +288,8 @@ public final class SimulatorUiMain {
         }
         String csv = original.exportTraceCsv();
         String[] rows = csv.split("\\R");
-        if (!rows[0].startsWith("frame,") || rows.length != original.generatedStates().size() + 1
-                || !rows[rows.length - 1].startsWith("23,")) {
+        if (!rows[0].startsWith("unit,") || rows.length != original.generatedStates().size() + 1
+                || !rows[rows.length - 1].startsWith("0,23,")) {
             throw new IllegalStateException("Trace CSV did not contain one row per generated frame");
         }
         try {
@@ -440,11 +441,12 @@ public final class SimulatorUiMain {
         replay.tick();
         List<UiPoint> first = new java.util.ArrayList<>();
         for (int frame = 0; frame <= 5; frame++) {
-            first.add(replay.generatedStateAtFrame(frame).entityPosition());
+            first.add(replay.generatedStateAtFrame(frame).units().get(0).entityPosition());
         }
         replay.seekFrame(0);
         for (int frame = 0; frame <= 5; frame++) {
-            assertFloatBits(first.get(frame), replay.generatedStateAtFrame(frame).entityPosition(),
+            assertFloatBits(first.get(frame),
+                    replay.generatedStateAtFrame(frame).units().get(0).entityPosition(),
                     "injection replay frame " + frame);
         }
 
@@ -462,6 +464,67 @@ public final class SimulatorUiMain {
                 throw new IllegalStateException("Terminal injection error was not reported");
             }
         }
+    }
+
+    private static void verifyMultiUnit() {
+        SimulationSession session = new SimulationSession();
+        session.newScenario(8, 3);
+        session.addDraft();
+        if (session.unitCount() != 2 || session.selectedDraftIndex() != 1) {
+            throw new IllegalStateException("Adding a draft did not create and select a second unit");
+        }
+        session.selectDraft(1);
+        session.placeEndpoint(new UiCell(6, 2));
+        UiFrame frame = session.tickFrame();
+        if (frame.units().size() != 2 || frame.frame() != 1) {
+            throw new IllegalStateException("Stage frame did not carry every unit");
+        }
+
+        List<List<UiPoint>> firstRun = new java.util.ArrayList<>();
+        for (int step = 0; step < 6; step++) {
+            UiFrame next = session.tickFrame();
+            List<UiPoint> positions = new java.util.ArrayList<>();
+            for (UiSnapshot unit : next.units()) {
+                positions.add(unit.entityPosition());
+            }
+            firstRun.add(positions);
+        }
+        session.seekFrame(0);
+        int step = 0;
+        for (int tick = 0; tick < 7; tick++) {
+            UiFrame next = session.tickFrame();
+            if (next.frame() < 2) {
+                continue;
+            }
+            for (int unit = 0; unit < 2; unit++) {
+                assertFloatBits(firstRun.get(step).get(unit), next.units().get(unit).entityPosition(),
+                        "multi-unit replay unit " + unit + " step " + step);
+            }
+            step++;
+        }
+
+        String text = session.exportScenario();
+        SimulationSession imported = new SimulationSession();
+        imported.importScenario(text);
+        if (imported.unitCount() != 2 || !imported.exportScenario().equals(text)) {
+            throw new IllegalStateException("Multi-unit scenario round trip changed the text");
+        }
+
+        try {
+            session.removeDraft(0);
+            session.removeDraft(0);
+            throw new IllegalStateException("Removing the last unit was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("至少保留")) {
+                throw new IllegalStateException("Last-unit removal error was not reported");
+            }
+        }
+
+        SimulationCanvas canvas = new SimulationCanvas(cell -> {
+        });
+        canvas.setSnapshot(frame.units().get(0));
+        canvas.setUnits(frame.units());
+        verifyCanvasPaint(canvas, 800, 560);
     }
 
     private static void verifyTrajectoryTooltip(SimulationCanvas canvas) {

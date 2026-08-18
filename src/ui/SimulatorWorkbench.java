@@ -44,6 +44,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -95,6 +96,8 @@ public final class SimulatorWorkbench extends JFrame {
     private final JComboBox<UiMovementMode> movementModeBox = new JComboBox<>(UiMovementMode.values());
     private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, 10.0d, 0.1d));
     private final JCheckBox diagonalToggle = new JCheckBox("允许斜向连线", true);
+    private final javax.swing.DefaultListModel<String> unitModel = new javax.swing.DefaultListModel<>();
+    private final JList<String> unitList = new JList<>(unitModel);
     private final JComboBox<UiCheckpointType> checkpointTypeBox = new JComboBox<>(UiCheckpointType.values());
     private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 3600.0d, 0.1d));
     private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 100, 1));
@@ -135,7 +138,7 @@ public final class SimulatorWorkbench extends JFrame {
                 seekExecutor.shutdownNow();
             }
         });
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
         pack();
         setLocationByPlatform(true);
         SwingUtilities.invokeLater(this::updateViewportCamera);
@@ -171,7 +174,7 @@ public final class SimulatorWorkbench extends JFrame {
                 return;
             }
             invalidateSeek();
-            refresh(session.tick());
+            refresh(session.tickFrame());
         });
         toolbar.add(step);
         playButton.setToolTipText("运行");
@@ -183,7 +186,8 @@ public final class SimulatorWorkbench extends JFrame {
         reset.addActionListener(event -> {
             stopPlayback();
             invalidateSeek();
-            refresh(session.resetSimulation());
+            session.resetSimulation();
+            refresh(session.snapshotFrame());
         });
         toolbar.add(reset);
         toolbar.addSeparator(new Dimension(12, 1));
@@ -260,6 +264,8 @@ public final class SimulatorWorkbench extends JFrame {
         content.setBackground(WINDOW_BACKGROUND);
         content.add(createMapSection());
         content.add(Box.createVerticalStrut(8));
+        content.add(createUnitSection());
+        content.add(Box.createVerticalStrut(8));
         content.add(createMovementSection());
         content.add(Box.createVerticalStrut(8));
         content.add(createToolSection());
@@ -292,7 +298,7 @@ public final class SimulatorWorkbench extends JFrame {
             stopPlayback();
             invalidateSeek();
             session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner));
-            refresh(session.snapshot());
+            refresh(session.snapshotFrame());
             requestMapFit();
         });
         JButton demo = new JButton("示例");
@@ -300,7 +306,7 @@ public final class SimulatorWorkbench extends JFrame {
             stopPlayback();
             invalidateSeek();
             session.loadDemoScenario();
-            refresh(session.snapshot());
+            refresh(session.snapshotFrame());
             requestMapFit();
         });
         actions.add(fresh);
@@ -310,6 +316,55 @@ public final class SimulatorWorkbench extends JFrame {
         c.gridwidth = 2;
         c.insets = new Insets(7, 0, 0, 0);
         section.add(actions, c);
+        return section;
+    }
+
+    private JPanel createUnitSection() {
+        JPanel section = section("单位");
+        section.setLayout(new BorderLayout(5, 5));
+        unitList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        unitList.setVisibleRowCount(2);
+        section.add(new JScrollPane(unitList), BorderLayout.CENTER);
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        actions.setOpaque(false);
+        JButton add = new JButton("添加");
+        add.setToolTipText("复制当前路线为新单位");
+        add.addActionListener(event -> {
+            session.addDraft();
+            stopPlayback();
+            invalidateSeek();
+            refresh(session.snapshotFrame());
+        });
+        actions.add(add);
+        JButton remove = new JButton("删除");
+        remove.setToolTipText("删除选中的单位（至少保留一个）");
+        remove.addActionListener(event -> {
+            int index = unitList.getSelectedIndex();
+            if (index < 0) {
+                return;
+            }
+            try {
+                session.removeDraft(index);
+            } catch (IllegalArgumentException error) {
+                footerStatus.setText("无法删除：" + error.getMessage());
+                return;
+            }
+            stopPlayback();
+            invalidateSeek();
+            refresh(session.snapshotFrame());
+        });
+        actions.add(remove);
+        section.add(actions, BorderLayout.SOUTH);
+        unitList.addListSelectionListener(event -> {
+            if (refreshing || event.getValueIsAdjusting()) {
+                return;
+            }
+            int index = unitList.getSelectedIndex();
+            if (index >= 0 && index != session.selectedDraftIndex()) {
+                session.selectDraft(index);
+                refresh(session.snapshotFrame());
+            }
+        });
         return section;
     }
 
@@ -522,7 +577,7 @@ public final class SimulatorWorkbench extends JFrame {
             }
             stopPlayback();
             invalidateSeek();
-            refresh(session.snapshot());
+            refresh(session.snapshotFrame());
         });
         actions.add(remove);
         JButton clear = iconButton("×", "清空检查点");
@@ -535,7 +590,7 @@ public final class SimulatorWorkbench extends JFrame {
             }
             stopPlayback();
             invalidateSeek();
-            refresh(session.snapshot());
+            refresh(session.snapshotFrame());
         });
         actions.add(clear);
         section.add(actions, BorderLayout.SOUTH);
@@ -551,7 +606,7 @@ public final class SimulatorWorkbench extends JFrame {
                 stopPlayback();
                 invalidateSeek();
                 session.setMovementMode((UiMovementMode) movementModeBox.getSelectedItem());
-                refresh(session.snapshot());
+                refresh(session.snapshotFrame());
             }
         });
         speedSpinner.addChangeListener(event -> {
@@ -559,7 +614,7 @@ public final class SimulatorWorkbench extends JFrame {
                 stopPlayback();
                 invalidateSeek();
                 session.setAttributeSpeed(((Number) speedSpinner.getValue()).floatValue());
-                refresh(session.snapshot());
+                refresh(session.snapshotFrame());
             }
         });
         diagonalToggle.addActionListener(event -> {
@@ -567,7 +622,7 @@ public final class SimulatorWorkbench extends JFrame {
                 stopPlayback();
                 invalidateSeek();
                 session.setAllowDiagonalMove(diagonalToggle.isSelected());
-                refresh(session.snapshot());
+                refresh(session.snapshotFrame());
             }
         });
     }
@@ -609,7 +664,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         invalidateSeek();
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
     }
 
     private String terrainError(UiCell cell, UiTerrain value) {
@@ -671,7 +726,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         invalidateSeek();
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(index >= 0 ? index : checkpointModel.size() - 1);
     }
 
@@ -691,7 +746,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         invalidateSeek();
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(index);
     }
 
@@ -708,7 +763,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         invalidateSeek();
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(Math.max(0, Math.min(checkpointModel.size() - 1, index + offset)));
     }
 
@@ -723,19 +778,19 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void advancePlayback() {
-        UiSnapshot current = null;
+        UiFrame current = null;
         try {
             for (int index = 0; index < framesPerTimerTick(); index++) {
-                current = session.tick();
-                if (current.terminal()) {
+                current = session.tickFrame();
+                if (session.isTerminal()) {
                     break;
                 }
             }
         } catch (SimulationSession.TerminalStateException terminal) {
             stopPlayback();
         }
-        refresh(current == null ? session.snapshot() : current);
-        if (current != null && current.terminal()) {
+        refresh(current == null ? session.snapshotFrame() : current);
+        if (current != null && session.isTerminal()) {
             stopPlayback();
         }
     }
@@ -812,7 +867,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         stopPlayback();
         invalidateSeek();
-        refresh(session.snapshot());
+        refresh(session.snapshotFrame());
         requestMapFit();
     }
 
@@ -828,7 +883,7 @@ public final class SimulatorWorkbench extends JFrame {
         long revision = session.scenarioRevision();
         pendingSeek = seekExecutor.submit(() -> {
             try {
-                UiSnapshot result = session.seekFrame(frame);
+                UiFrame result = session.seekFrame(frame);
                 SwingUtilities.invokeLater(() -> {
                     if (request != seekRequest.get() || revision != session.scenarioRevision()) {
                         return;
@@ -858,7 +913,7 @@ public final class SimulatorWorkbench extends JFrame {
 
     private void showTimelineSelection(int frame) {
         try {
-            UiSnapshot generated = session.generatedStateAtFrame(frame);
+            UiFrame generated = session.generatedStateAtFrame(frame);
             if (generated != null) {
                 refresh(generated);
             } else {
@@ -870,10 +925,12 @@ public final class SimulatorWorkbench extends JFrame {
         }
     }
 
-    private void refresh(UiSnapshot snapshot) {
-        if (snapshot == null) {
+    private void refresh(UiFrame frame) {
+        if (frame == null || frame.units().isEmpty()) {
             return;
         }
+        UiSnapshot snapshot = frame.units().get(
+                Math.min(session.selectedDraftIndex(), frame.units().size() - 1));
         refreshing = true;
         try {
             mapWidthSpinner.setValue(snapshot.width());
@@ -882,8 +939,9 @@ public final class SimulatorWorkbench extends JFrame {
             speedSpinner.setValue((double) snapshot.attributeSpeed());
             diagonalToggle.setSelected(snapshot.allowDiagonalMove());
             canvas.setSnapshot(snapshot);
-            canvas.setTrajectory(showTrajectoryToggle.isSelected()
-                    ? trajectoryThroughFrame(snapshot.frame()) : List.of());
+            canvas.setUnits(frame.units());
+            canvas.setTrajectories(showTrajectoryToggle.isSelected()
+                    ? trajectoriesThroughFrame(frame.frame()) : List.of());
             timelineSlider.setMaximum(Math.max(0, session.generatedLastFrame()));
             timelineSlider.setValue(Math.min(snapshot.frame(), timelineSlider.getMaximum()));
             frameValue.setText(Integer.toString(snapshot.frame()));
@@ -906,12 +964,21 @@ public final class SimulatorWorkbench extends JFrame {
             nextNodeValue.setText(formatCell(snapshot.nextNode()));
             statusValue.setText(snapshot.transition().isBlank() ? "-" : snapshot.transition());
             footerStatus.setText(statusLabel(snapshot));
+            refreshUnitList();
             refreshCheckpointList(snapshot);
             refreshCheckpointControls();
             refreshZoomLabel();
         } finally {
             refreshing = false;
         }
+    }
+
+    private void refreshUnitList() {
+        unitModel.clear();
+        for (int index = 0; index < session.unitCount(); index++) {
+            unitModel.addElement("单位 " + (index + 1));
+        }
+        unitList.setSelectedIndex(session.selectedDraftIndex());
     }
 
     private void applyRequestedViewPosition() {
@@ -966,10 +1033,19 @@ public final class SimulatorWorkbench extends JFrame {
         zoomValue.setText(String.format(Locale.ROOT, "%.0f%%", canvas.zoomPercent()));
     }
 
-    private List<UiSnapshot> trajectoryThroughFrame(int frame) {
-        List<UiSnapshot> states = session.generatedStates();
-        int inclusiveCount = Math.min(states.size(), Math.max(0, frame) + 1);
-        return states.subList(0, inclusiveCount);
+    private List<List<UiSnapshot>> trajectoriesThroughFrame(int frame) {
+        List<UiFrame> frames = session.generatedStates();
+        int inclusiveCount = Math.min(frames.size(), Math.max(0, frame) + 1);
+        List<List<UiSnapshot>> perUnit = new ArrayList<>();
+        for (int unit = 0; unit < session.unitCount(); unit++) {
+            List<UiSnapshot> path = new ArrayList<>(inclusiveCount);
+            for (int index = 0; index < inclusiveCount; index++) {
+                List<UiSnapshot> units = frames.get(index).units();
+                path.add(units.get(Math.min(unit, units.size() - 1)));
+            }
+            perUnit.add(List.copyOf(path));
+        }
+        return List.copyOf(perUnit);
     }
 
     private void refreshCheckpointList(UiSnapshot snapshot) {

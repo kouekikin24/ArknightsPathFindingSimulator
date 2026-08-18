@@ -6,23 +6,30 @@ import java.util.List;
  * format is line-oriented key/value text so files stay diff-friendly:
  *
  * <pre>
- *   # arknights pathfinding scenario v2
+ *   # arknights pathfinding scenario v3
  *   map 12 8
+ *   unit 1
  *   spawn 1 1
  *   endpoint 10 6
  *   movement GROUND
  *   speed 1.0
  *   diagonal true
  *   checkpoint MOVE 5 1
- *   checkpoint WAIT_FOR_SECONDS 2.5
- *   checkpoint DISAPPEAR
+ *   unit 2
+ *   spawn 2 2
+ *   endpoint 8 6
+ *   movement FLYING
+ *   speed 2.0
+ *   diagonal false
  *   terrain 7 3 BOX
  * </pre>
  *
- * Only non-OPEN terrain cells are listed. Checkpoint lines carry the type
- * name plus its cell, seconds, or area argument; bare "checkpoint x y" lines
- * from v1 files are still read as MOVE. Parsing rejects unknown or misplaced
- * lines with their line number instead of ignoring them silently.
+ * Only non-OPEN terrain cells are listed. Each {@code unit <n>} line starts
+ * the next route block; files without any unit line (v2) describe a single
+ * implicit unit. Checkpoint lines carry the type name plus its cell, seconds,
+ * or area argument; bare "checkpoint x y" lines from v1 files are still read
+ * as MOVE. Parsing rejects unknown or misplaced lines with their line number
+ * instead of ignoring them silently.
  */
 final class ScenarioCodec {
     static final int MINIMUM_DIMENSION = 2;
@@ -34,34 +41,39 @@ final class ScenarioCodec {
     record TerrainEntry(UiCell cell, UiTerrain terrain) {
     }
 
-    record Scenario(int width, int height, UiCell spawn, UiCell endpoint,
-                    List<UiCheckpoint> checkpoints, UiMovementMode movementMode,
-                    float speed, boolean allowDiagonalMove,
-                    List<TerrainEntry> terrain) {
+    record UnitSpec(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+                    UiMovementMode movementMode, float speed, boolean allowDiagonalMove) {
     }
 
-    static String format(int width, int height, List<UiTerrain> terrain, UiCell spawn,
-                         UiCell endpoint, List<UiCheckpoint> checkpoints, UiMovementMode movementMode,
-                         float speed, boolean allowDiagonalMove) {
+    record Scenario(int width, int height, List<UnitSpec> units, List<TerrainEntry> terrain) {
+    }
+
+    static String format(int width, int height, List<UiTerrain> terrain, List<UnitSpec> units) {
         StringBuilder text = new StringBuilder();
-        text.append("# arknights pathfinding scenario v2\n");
+        text.append("# arknights pathfinding scenario v3\n");
         text.append("map ").append(width).append(' ').append(height).append('\n');
-        text.append("spawn ").append(spawn.x()).append(' ').append(spawn.y()).append('\n');
-        text.append("endpoint ").append(endpoint.x()).append(' ').append(endpoint.y()).append('\n');
-        text.append("movement ").append(movementMode.name()).append('\n');
-        text.append("speed ").append(Float.toString(speed)).append('\n');
-        text.append("diagonal ").append(allowDiagonalMove).append('\n');
-        for (UiCheckpoint checkpoint : checkpoints) {
-            text.append("checkpoint ").append(checkpoint.type().name());
-            if (checkpoint.cell() != null) {
-                text.append(' ').append(checkpoint.cell().x()).append(' ')
-                        .append(checkpoint.cell().y());
-            } else if (checkpoint.type().usesSeconds()) {
-                text.append(' ').append(Float.toString(checkpoint.value()));
-            } else if (checkpoint.type().usesArea()) {
-                text.append(' ').append(checkpoint.area());
+        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
+            UnitSpec unit = units.get(unitIndex);
+            text.append("unit ").append(unitIndex + 1).append('\n');
+            text.append("spawn ").append(unit.spawn().x()).append(' ')
+                    .append(unit.spawn().y()).append('\n');
+            text.append("endpoint ").append(unit.endpoint().x()).append(' ')
+                    .append(unit.endpoint().y()).append('\n');
+            text.append("movement ").append(unit.movementMode().name()).append('\n');
+            text.append("speed ").append(Float.toString(unit.speed())).append('\n');
+            text.append("diagonal ").append(unit.allowDiagonalMove()).append('\n');
+            for (UiCheckpoint checkpoint : unit.checkpoints()) {
+                text.append("checkpoint ").append(checkpoint.type().name());
+                if (checkpoint.cell() != null) {
+                    text.append(' ').append(checkpoint.cell().x()).append(' ')
+                            .append(checkpoint.cell().y());
+                } else if (checkpoint.type().usesSeconds()) {
+                    text.append(' ').append(Float.toString(checkpoint.value()));
+                } else if (checkpoint.type().usesArea()) {
+                    text.append(' ').append(checkpoint.area());
+                }
+                text.append('\n');
             }
-            text.append('\n');
         }
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -81,13 +93,9 @@ final class ScenarioCodec {
         }
         Integer width = null;
         Integer height = null;
-        UiCell spawn = null;
-        UiCell endpoint = null;
-        UiMovementMode movementMode = null;
-        Float speed = null;
-        Boolean diagonal = null;
-        List<UiCheckpoint> checkpoints = new ArrayList<>();
+        List<UnitSpec> units = new ArrayList<>();
         List<TerrainEntry> terrain = new ArrayList<>();
+        UnitBuilder current = null;
 
         String[] lines = text.split("\\R", -1);
         for (int index = 0; index < lines.length; index++) {
@@ -102,6 +110,11 @@ final class ScenarioCodec {
                 throw new IllegalArgumentException("'" + directive + "' at line " + lineNumber
                         + " must appear after 'map <width> <height>'");
             }
+            if (current == null && isUnitScoped(directive)) {
+                // v2 files carry unit-scoped lines without a 'unit' header:
+                // they describe a single implicit unit.
+                current = new UnitBuilder();
+            }
             switch (directive) {
                 case "map" -> {
                     requireParts(parts, 3, "map <width> <height>", lineNumber);
@@ -111,30 +124,42 @@ final class ScenarioCodec {
                     width = parseDimension(parts[1], lineNumber);
                     height = parseDimension(parts[2], lineNumber);
                 }
+                case "unit" -> {
+                    requireParts(parts, 2, "unit <number>", lineNumber);
+                    if (current != null) {
+                        units.add(current.build(lineNumber));
+                    }
+                    int unitNumber = parseInteger(parts[1], "Unit number", lineNumber);
+                    if (unitNumber != units.size() + 1) {
+                        throw new IllegalArgumentException("Unit numbers must be sequential; expected "
+                                + (units.size() + 1) + " at line " + lineNumber);
+                    }
+                    current = new UnitBuilder();
+                }
                 case "spawn" -> {
                     requireParts(parts, 3, "spawn <x> <y>", lineNumber);
-                    if (spawn != null) {
+                    if (current.spawn != null) {
                         throw duplicate("spawn", lineNumber);
                     }
-                    spawn = parseCell(parts[1], parts[2], width, height, lineNumber);
+                    current.spawn = parseCell(parts[1], parts[2], width, height, lineNumber);
                 }
                 case "endpoint" -> {
                     requireParts(parts, 3, "endpoint <x> <y>", lineNumber);
-                    if (endpoint != null) {
+                    if (current.endpoint != null) {
                         throw duplicate("endpoint", lineNumber);
                     }
-                    endpoint = parseCell(parts[1], parts[2], width, height, lineNumber);
+                    current.endpoint = parseCell(parts[1], parts[2], width, height, lineNumber);
                 }
                 case "movement" -> {
                     requireParts(parts, 2, "movement GROUND|FLYING", lineNumber);
-                    if (movementMode != null) {
+                    if (current.movementMode != null) {
                         throw duplicate("movement", lineNumber);
                     }
-                    movementMode = parseMovement(parts[1], lineNumber);
+                    current.movementMode = parseMovement(parts[1], lineNumber);
                 }
                 case "speed" -> {
                     requireParts(parts, 2, "speed <float>", lineNumber);
-                    if (speed != null) {
+                    if (current.speed != null) {
                         throw duplicate("speed", lineNumber);
                     }
                     float value = parseFloat(parts[1], lineNumber);
@@ -143,18 +168,18 @@ final class ScenarioCodec {
                                 "Movement speed must be a finite number of at least 0.1 at line "
                                         + lineNumber);
                     }
-                    speed = value;
+                    current.speed = value;
                 }
                 case "diagonal" -> {
                     requireParts(parts, 2, "diagonal true|false", lineNumber);
-                    if (diagonal != null) {
+                    if (current.diagonal != null) {
                         throw duplicate("diagonal", lineNumber);
                     }
                     if (!parts[1].equals("true") && !parts[1].equals("false")) {
                         throw new IllegalArgumentException(
                                 "diagonal must be true or false at line " + lineNumber);
                     }
-                    diagonal = Boolean.parseBoolean(parts[1]);
+                    current.diagonal = Boolean.parseBoolean(parts[1]);
                 }
                 case "checkpoint" -> {
                     UiCheckpoint checkpoint;
@@ -168,12 +193,12 @@ final class ScenarioCodec {
                         }
                         checkpoint = parseCheckpointBody(parts, width, height, lineNumber);
                     }
-                    if (checkpoint.cell() != null && containsCell(checkpoints, checkpoint.cell())) {
+                    if (checkpoint.cell() != null && containsCell(current.checkpoints, checkpoint.cell())) {
                         throw new IllegalArgumentException("Duplicate checkpoint at cell ("
                                 + checkpoint.cell().x() + ", " + checkpoint.cell().y()
                                 + ") at line " + lineNumber);
                     }
-                    checkpoints.add(checkpoint);
+                    current.checkpoints.add(checkpoint);
                 }
                 case "terrain" -> {
                     requireParts(parts, 4, "terrain <x> <y> OPEN|BOX|PIT|WALL", lineNumber);
@@ -187,15 +212,42 @@ final class ScenarioCodec {
         if (width == null) {
             throw new IllegalArgumentException("Scenario requires a 'map <width> <height>' line");
         }
-        if (spawn == null || endpoint == null) {
-            throw new IllegalArgumentException("Scenario requires spawn and endpoint cells");
+        if (current != null) {
+            units.add(current.build(lines.length + 1));
         }
-        if (movementMode == null || speed == null || diagonal == null) {
-            throw new IllegalArgumentException(
-                    "Scenario requires movement, speed, and diagonal values");
+        if (units.isEmpty()) {
+            throw new IllegalArgumentException("Scenario requires at least one unit block");
         }
-        return new Scenario(width, height, spawn, endpoint, List.copyOf(checkpoints),
-                movementMode, speed, diagonal, List.copyOf(terrain));
+        return new Scenario(width, height, List.copyOf(units), List.copyOf(terrain));
+    }
+
+    private static boolean isUnitScoped(String directive) {
+        return switch (directive) {
+            case "spawn", "endpoint", "movement", "speed", "diagonal", "checkpoint" -> true;
+            default -> false;
+        };
+    }
+
+    /** Mutable parse buffer for one unit block; finalized into an immutable UnitSpec. */
+    private static final class UnitBuilder {
+        private UiCell spawn;
+        private UiCell endpoint;
+        private final List<UiCheckpoint> checkpoints = new ArrayList<>();
+        private UiMovementMode movementMode;
+        private Float speed;
+        private Boolean diagonal;
+
+        private UnitSpec build(int lineNumber) {
+            if (spawn == null || endpoint == null) {
+                throw new IllegalArgumentException("A unit needs spawn and endpoint cells (near line "
+                        + lineNumber + ")");
+            }
+            if (movementMode == null || speed == null || diagonal == null) {
+                throw new IllegalArgumentException("A unit needs movement, speed, and diagonal values (near line "
+                        + lineNumber + ")");
+            }
+            return new UnitSpec(spawn, endpoint, List.copyOf(checkpoints), movementMode, speed, diagonal);
+        }
     }
 
     private static UiCheckpoint parseCheckpointBody(String[] parts, int width, int height,

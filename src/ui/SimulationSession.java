@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * The sole UI-to-core adapter. Swing works with UiSnapshot and editor commands;
+ * The sole UI-to-core adapter. Swing works with UiFrame and editor commands;
  * only this class creates or reads the mutable simulation objects.
  */
 public final class SimulationSession {
@@ -18,22 +18,17 @@ public final class SimulationSession {
     private int width;
     private int height;
     private UiTerrain[] terrain;
-    private UiCell spawn;
-    private UiCell endpoint;
-    private final List<UiCheckpoint> checkpoints = new ArrayList<>();
-    private UiMovementMode movementMode = UiMovementMode.GROUND;
-    private float attributeSpeed = 1f;
-    private boolean allowDiagonalMove = true;
+    private final List<UnitDraft> drafts = new ArrayList<>();
+    private int selectedDraft;
 
     private GridMap map;
-    private Route route;
-    private PathfindingSimulator simulator;
-    private FrameTrace lastTrace;
+    private Stage stage;
+    private List<FrameTrace> lastTraces = List.of();
+    private List<Boolean> trajectoryBreaks = List.of();
     /** Immutable timeline state atomically published to EDT readers. */
     private volatile Timeline timeline = Timeline.EMPTY;
-    /** The first confirmed terminal state, or -1 while the route is live. */
+    /** The first frame at which every unit is terminal, or -1 while any unit lives. */
     private volatile int terminalFrame = -1;
-    private boolean trajectoryBreak;
     private volatile long scenarioRevision;
     /**
      * UI playback owns the external phase clock passed to the core. Rebuilding a
@@ -44,9 +39,14 @@ public final class SimulationSession {
     private final List<RunEvent> runEvents = new ArrayList<>();
 
     private List<UiTerrain> cachedTerrainView;
-    private List<UiCheckpoint> cachedCheckpointView;
     private PathMap cachedSegmentSource;
     private List<UiPathSegment> cachedSegments = List.of();
+
+    /** One route's editable data; the scenario holds one draft per unit. */
+    private record UnitDraft(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+                             UiMovementMode movementMode, float attributeSpeed,
+                             boolean allowDiagonalMove) {
+    }
 
     /** Signals a normal attempt to advance beyond a confirmed terminal frame. */
     public static final class TerminalStateException extends IllegalStateException {
@@ -68,22 +68,67 @@ public final class SimulationSession {
 
     public synchronized void loadDemoScenario() {
         initializeScenario(12, 8);
-        spawn = new UiCell(1, 1);
-        endpoint = new UiCell(10, 6);
-        checkpoints.add(UiCheckpoint.move(new UiCell(5, 1)));
-        checkpoints.add(UiCheckpoint.move(new UiCell(5, 5)));
+        UnitDraft demo = new UnitDraft(new UiCell(1, 1), new UiCell(10, 6),
+                new ArrayList<>(List.of(UiCheckpoint.move(new UiCell(5, 1)),
+                        UiCheckpoint.move(new UiCell(5, 5)))),
+                UiMovementMode.GROUND, 1f, true);
+        drafts.clear();
+        drafts.add(demo);
+        selectedDraft = 0;
         setTerrainDirect(new UiCell(7, 3), UiTerrain.BOX);
         setTerrainDirect(new UiCell(7, 4), UiTerrain.PIT);
         setTerrainDirect(new UiCell(7, 5), UiTerrain.WALL);
         rebuildSimulator();
     }
 
+    // ----- unit management -------------------------------------------------
+
+    public synchronized int unitCount() {
+        return drafts.size();
+    }
+
+    public synchronized int selectedDraftIndex() {
+        return selectedDraft;
+    }
+
+    /** Selects which route subsequent editor commands and combat injections target. */
+    public synchronized void selectDraft(int index) {
+        if (index < 0 || index >= drafts.size()) {
+            throw new IllegalArgumentException("Unit index is outside the unit list");
+        }
+        selectedDraft = index;
+    }
+
+    /** Adds a clone of the selected route as a new unit and selects it. */
+    public synchronized void addDraft() {
+        UnitDraft source = draft();
+        drafts.add(new UnitDraft(source.spawn(), source.endpoint(),
+                new ArrayList<>(source.checkpoints()), source.movementMode(),
+                source.attributeSpeed(), source.allowDiagonalMove()));
+        selectedDraft = drafts.size() - 1;
+        rebuildSimulator();
+    }
+
+    public synchronized void removeDraft(int index) {
+        if (drafts.size() <= 1) {
+            throw new IllegalArgumentException("至少保留一个单位");
+        }
+        if (index < 0 || index >= drafts.size()) {
+            throw new IllegalArgumentException("Unit index is outside the unit list");
+        }
+        drafts.remove(index);
+        selectedDraft = Math.min(selectedDraft, drafts.size() - 1);
+        rebuildSimulator();
+    }
+
+    // ----- terrain editing --------------------------------------------------
+
     /**
      * Applies an editor terrain change.
      *
-     * @return false when the cell is occupied by the spawn, endpoint, or a
-     *         checkpoint, in which case nothing is changed and the caller
-     *         should tell the user why.
+     * @return false when the cell is occupied by a route point of any unit, in
+     *         which case nothing is changed and the caller should tell the
+     *         user why.
      */
     public synchronized boolean setTerrain(UiCell cell, UiTerrain value) {
         requireInside(cell);
@@ -101,17 +146,23 @@ public final class SimulationSession {
 
     public synchronized void placeSpawn(UiCell cell) {
         requireInside(cell);
-        spawn = cell;
+        UnitDraft current = draft();
+        updateDraft(new UnitDraft(cell, current.endpoint(), current.checkpoints(),
+                current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
         ensureOpen(cell);
         rebuildSimulator();
     }
 
     public synchronized void placeEndpoint(UiCell cell) {
         requireInside(cell);
-        endpoint = cell;
+        UnitDraft current = draft();
+        updateDraft(new UnitDraft(current.spawn(), cell, current.checkpoints(),
+                current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
         ensureOpen(cell);
         rebuildSimulator();
     }
+
+    // ----- checkpoint editing ------------------------------------------------
 
     /**
      * Appends a checkpoint after validating the resulting route. Route rules
@@ -119,17 +170,17 @@ public final class SimulationSession {
      * edits with an exception before anything is changed.
      */
     public synchronized void addCheckpoint(UiCheckpoint checkpoint) {
-        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        List<UiCheckpoint> next = new ArrayList<>(draft().checkpoints());
         next.add(checkpoint);
         commitCheckpoints(next);
     }
 
     /** Inserts a checkpoint before the given index; pass size() to append. */
     public synchronized void insertCheckpointBefore(int index, UiCheckpoint checkpoint) {
-        if (index < 0 || index > checkpoints.size()) {
+        if (index < 0 || index > draft().checkpoints().size()) {
             throw new IllegalArgumentException("Insertion index is outside the checkpoint list");
         }
-        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        List<UiCheckpoint> next = new ArrayList<>(draft().checkpoints());
         next.add(index, checkpoint);
         commitCheckpoints(next);
     }
@@ -137,13 +188,14 @@ public final class SimulationSession {
     /** Replaces a checkpoint's type and parameters, keeping its map cell when the new type uses one. */
     public synchronized void updateCheckpoint(int index, UiCheckpointType type, float value, int area) {
         requireCheckpointIndex(index);
-        UiCheckpoint previous = checkpoints.get(index);
+        List<UiCheckpoint> current = draft().checkpoints();
+        UiCheckpoint previous = current.get(index);
         if (type.hasPoint() && previous.cell() == null) {
             throw new IllegalArgumentException("Checkpoint " + index
                     + " has no map cell to keep for " + type.label());
         }
         UiCheckpoint updated = new UiCheckpoint(type, previous.cell(), value, area);
-        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        List<UiCheckpoint> next = new ArrayList<>(current);
         next.set(index, updated);
         commitCheckpoints(next);
     }
@@ -151,43 +203,43 @@ public final class SimulationSession {
     /** Moves a checkpoint one slot up (-1) or down (+1); out-of-range moves are ignored. */
     public synchronized void moveCheckpoint(int index, int offset) {
         requireCheckpointIndex(index);
+        List<UiCheckpoint> current = draft().checkpoints();
         int target = index + offset;
-        if (target < 0 || target >= checkpoints.size()) {
+        if (target < 0 || target >= current.size()) {
             return;
         }
-        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        List<UiCheckpoint> next = new ArrayList<>(current);
         UiCheckpoint moved = next.remove(index);
         next.add(target, moved);
         commitCheckpoints(next);
     }
 
     public synchronized void removeCheckpoint(int index) {
-        if (index < 0 || index >= checkpoints.size()) {
+        if (index < 0 || index >= draft().checkpoints().size()) {
             return;
         }
-        List<UiCheckpoint> next = new ArrayList<>(checkpoints);
+        List<UiCheckpoint> next = new ArrayList<>(draft().checkpoints());
         next.remove(index);
         commitCheckpoints(next);
     }
 
     public synchronized void clearCheckpoints() {
-        if (checkpoints.isEmpty()) {
+        if (draft().checkpoints().isEmpty()) {
             return;
         }
         commitCheckpoints(new ArrayList<>());
     }
 
     private void requireCheckpointIndex(int index) {
-        if (index < 0 || index >= checkpoints.size()) {
+        if (index < 0 || index >= draft().checkpoints().size()) {
             throw new IllegalArgumentException("Checkpoint index is outside the list");
         }
     }
 
     /**
-     * Validates the candidate list against the current spawn, endpoint, and
-     * movement settings, then commits it. A probe Route performs the same
-     * validation the core performs, so an invalid edit is rejected without
-     * touching the current scenario.
+     * Validates the candidate list against the selected route's settings, then
+     * commits it. A probe Route performs the same validation the core
+     * performs, so an invalid edit is rejected without touching the scenario.
      */
     private void commitCheckpoints(List<UiCheckpoint> next) {
         for (int index = 0; index < next.size(); index++) {
@@ -202,11 +254,13 @@ public final class SimulationSession {
                 }
             }
         }
-        new Route(toCorePoint(spawn.center()), toCorePoint(endpoint.center()),
-                toCoreCheckpoints(next), coreMovementMode(), allowDiagonalMove, true, false);
-        checkpoints.clear();
-        checkpoints.addAll(next);
-        for (UiCheckpoint checkpoint : checkpoints) {
+        UnitDraft current = draft();
+        new Route(toCorePoint(current.spawn().center()), toCorePoint(current.endpoint().center()),
+                toCoreCheckpoints(next), coreMovementMode(current.movementMode()),
+                current.allowDiagonalMove(), true, false);
+        current.checkpoints().clear();
+        current.checkpoints().addAll(next);
+        for (UiCheckpoint checkpoint : current.checkpoints()) {
             if (checkpoint.cell() != null) {
                 ensureOpen(checkpoint.cell());
             }
@@ -214,11 +268,15 @@ public final class SimulationSession {
         rebuildSimulator();
     }
 
+    // ----- route settings ----------------------------------------------------
+
     public synchronized void setMovementMode(UiMovementMode value) {
-        if (movementMode == value) {
+        UnitDraft current = draft();
+        if (current.movementMode() == value) {
             return;
         }
-        movementMode = value;
+        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
+                value, current.attributeSpeed(), current.allowDiagonalMove()));
         rebuildSimulator();
     }
 
@@ -226,20 +284,26 @@ public final class SimulationSession {
         if (!Float.isFinite(value) || value < 0.1f) {
             throw new IllegalArgumentException("Movement speed must be at least 0.1");
         }
-        if (attributeSpeed == value) {
+        UnitDraft current = draft();
+        if (current.attributeSpeed() == value) {
             return;
         }
-        attributeSpeed = value;
+        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
+                current.movementMode(), value, current.allowDiagonalMove()));
         rebuildSimulator();
     }
 
     public synchronized void setAllowDiagonalMove(boolean value) {
-        if (allowDiagonalMove == value) {
+        UnitDraft current = draft();
+        if (current.allowDiagonalMove() == value) {
             return;
         }
-        allowDiagonalMove = value;
+        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
+                current.movementMode(), current.attributeSpeed(), value));
         rebuildSimulator();
     }
+
+    // ----- playback ----------------------------------------------------------
 
     public synchronized UiSnapshot resetSimulation() {
         rebuildSimulator();
@@ -247,16 +311,22 @@ public final class SimulationSession {
     }
 
     public synchronized boolean canTick() {
-        return terminalFrame < 0 || simulator.frame() < terminalFrame;
+        return terminalFrame < 0 || currentFrame() < terminalFrame;
     }
 
+    /** Advances one frame and returns the selected unit's snapshot. */
     public synchronized UiSnapshot tick() {
+        return tickFrame().units().get(selectedDraft);
+    }
+
+    /** Advances one frame and returns the stage-wide frame view. */
+    public synchronized UiFrame tickFrame() {
         if (!canTick()) {
             throw new TerminalStateException("Simulation is terminal at frame " + terminalFrame
                     + "; future frames are not defined");
         }
         advanceOneFrame();
-        UiSnapshot result = snapshot();
+        UiFrame result = snapshotFrame();
         int frame = result.frame();
         Timeline current = timeline;
         if (frame == current.size()) {
@@ -266,7 +336,7 @@ public final class SimulationSession {
         } else {
             throw new IllegalStateException("Timeline gap before frame " + frame);
         }
-        if (isTerminalMode(simulator.unit().mode())) {
+        if (allUnitsTerminal()) {
             terminalFrame = frame;
         }
         return result;
@@ -275,35 +345,57 @@ public final class SimulationSession {
     /** Advance only core state and snapshot dependencies, without allocating a snapshot. */
     private void advanceOneFrame() {
         // Keep the externally supplied phase exactly aligned with S[n] -> S[n+1].
-        if (globalFrame != simulator.frame()) {
+        if (globalFrame != currentFrame()) {
             throw new IllegalStateException("Simulation frame drift: expected global frame "
-                    + simulator.frame() + ", got " + globalFrame);
+                    + currentFrame() + ", got " + globalFrame);
         }
-        applyRunEvents(simulator.frame(), globalFrame);
-        lastTrace = simulator.tick(globalFrame++);
-        int frame = simulator.frame();
+        applyRunEvents(currentFrame(), globalFrame);
+        lastTraces = stage.tick(globalFrame++);
+        int frame = currentFrame();
         Timeline current = timeline;
-        UiSnapshot previous = frame > 0 && frame - 1 < current.size()
-                ? current.get(frame - 1)
-                : null;
-        trajectoryBreak = isTrajectoryBreak(lastTrace, previous);
+        List<UiSnapshot> previousUnits = frame > 0 && frame - 1 < current.size()
+                ? current.get(frame - 1).units()
+                : List.of();
+        List<Boolean> breaks = new ArrayList<>(drafts.size());
+        for (int index = 0; index < drafts.size(); index++) {
+            FrameTrace trace = lastTraces.get(index);
+            UiSnapshot previous = index < previousUnits.size() ? previousUnits.get(index) : null;
+            breaks.add(isTrajectoryBreak(trace, previous));
+        }
+        trajectoryBreaks = breaks;
     }
 
+    /** Snapshot of the selected unit for single-unit callers and legacy checks. */
     public synchronized UiSnapshot snapshot() {
+        return buildUnitSnapshot(stage.simulator(selectedDraft), draft(), selectedDraft);
+    }
+
+    /** Stage-wide frame view containing every unit. */
+    public synchronized UiFrame snapshotFrame() {
+        List<UiSnapshot> units = new ArrayList<>(drafts.size());
+        for (int index = 0; index < drafts.size(); index++) {
+            units.add(buildUnitSnapshot(stage.simulator(index), drafts.get(index), index));
+        }
+        return new UiFrame(currentFrame(), stage.simulator(0).clock().playTime(), units);
+    }
+
+    private UiSnapshot buildUnitSnapshot(PathfindingSimulator simulator, UnitDraft unitDraft,
+                                         int unitIndex) {
         UnitState unit = simulator.unit();
-        PathMap activePathMap = activePathMap();
+        PathMap activePathMap = activePathMap(simulator, unitDraft);
         TileCoord cursorTile = TileCoord.fromPosition(unit.cursorPosition());
+        FrameTrace trace = lastTraceFor(unitIndex);
 
         return new UiSnapshot(
                 width,
                 height,
                 terrainView(),
-                spawn.center(),
-                endpoint.center(),
-                checkpointList(),
-                movementMode,
-                attributeSpeed,
-                allowDiagonalMove,
+                unitDraft.spawn().center(),
+                unitDraft.endpoint().center(),
+                List.copyOf(unitDraft.checkpoints()),
+                unitDraft.movementMode(),
+                unitDraft.attributeSpeed(),
+                unitDraft.allowDiagonalMove(),
                 simulator.frame(),
                 modeLabel(unit.mode()),
                 unit.routeProgress().checkpointIndex(),
@@ -314,24 +406,24 @@ public final class SimulationSession {
                 toUiPoint(unit.cursorPosition()),
                 toUiPoint(unit.inertiaVelocity()),
                 toUiPoint(unit.cachedAvoidance()),
-                lastTrace == null ? UiPoint.ZERO : toUiPoint(lastTrace.givenDirection()),
+                trace == null ? UiPoint.ZERO : toUiPoint(trace.givenDirection()),
                 map.contains(cursorTile) ? toUiCell(cursorTile) : null,
-                lastTrace == null || lastTrace.nextNode() == null ? null : toUiCell(lastTrace.nextNode()),
-                currentTarget(activePathMap),
-                lastTrace != null && lastTrace.avoidanceRecomputed(),
-                lastTrace == null ? "" : lastTrace.transition(),
+                trace == null || trace.nextNode() == null ? null : toUiCell(trace.nextNode()),
+                currentTarget(simulator, unitDraft, activePathMap, unitIndex),
+                trace != null && trace.avoidanceRecomputed(),
+                trace == null ? "" : trace.transition(),
                 simulator.clock().playTime(),
-                pathSegments(activePathMap),
-                trajectoryBreak);
+                pathSegments(activePathMap, coreMovementMode(unitDraft.movementMode())),
+                trajectoryBreakFor(unitIndex));
     }
 
     /**
-     * Return the exact state S[n], where S[0] is the un-ticked birth state and
+     * Return the exact frame S[n], where S[0] is the un-ticked birth state and
      * S[n] is obtained by ticking global frames 0 through n - 1. A backwards
-     * seek rebuilds the mutable simulator and replays from S[0], never using the
-     * simulator's finite trace ring as the timeline source.
+     * seek rebuilds the mutable simulators and replays from S[0], never using
+     * the simulator's finite trace ring as the timeline source.
      */
-    public UiSnapshot seekFrame(long targetFrame) {
+    public UiFrame seekFrame(long targetFrame) {
         if (targetFrame < 0L || targetFrame > Integer.MAX_VALUE - 1L) {
             throw new IllegalArgumentException("Frame must be between 0 and " + (Integer.MAX_VALUE - 1L));
         }
@@ -341,7 +433,7 @@ public final class SimulationSession {
             ensureTimelineInitialized();
             rejectBeyondTerminal(target);
             expectedRevision = scenarioRevision;
-            if (target < simulator.frame()) {
+            if (target < currentFrame()) {
                 rebuildSimulator(false);
             }
         }
@@ -352,17 +444,17 @@ public final class SimulationSession {
                 if (scenarioRevision != expectedRevision) {
                     throw new IllegalStateException("Replay request was superseded by a scenario edit");
                 }
-                if (simulator.frame() >= target) {
+                if (currentFrame() >= target) {
                     return timeline.get(target);
                 }
-                int chunkEnd = Math.min(target, simulator.frame() + REPLAY_CHUNK_FRAMES);
-                while (simulator.frame() < chunkEnd) {
+                int chunkEnd = Math.min(target, currentFrame() + REPLAY_CHUNK_FRAMES);
+                while (currentFrame() < chunkEnd) {
                     checkReplayInterrupted();
-                    if (simulator.frame() + 1 < timeline.size()) {
+                    if (currentFrame() + 1 < timeline.size()) {
                         advanceOneFrame();
                     } else {
                         rejectBeyondTerminal(target);
-                        tick();
+                        tickFrame();
                     }
                 }
             }
@@ -371,16 +463,16 @@ public final class SimulationSession {
     }
 
     /** Alias used by UI code that treats the timeline as the playback source. */
-    public UiSnapshot stateAtFrame(long targetFrame) {
+    public UiFrame stateAtFrame(long targetFrame) {
         return seekFrame(targetFrame);
     }
 
     /**
-     * Return a generated state without replaying or changing the mutable
-     * simulator. This is intentionally nullable so a slider can show only
+     * Return a generated frame without replaying or changing the mutable
+     * simulators. This is intentionally nullable so a slider can show only
      * confirmed frames while a background seek is pending.
      */
-    public UiSnapshot generatedStateAtFrame(long targetFrame) {
+    public UiFrame generatedStateAtFrame(long targetFrame) {
         if (targetFrame < 0L || targetFrame > Integer.MAX_VALUE - 1L) {
             return null;
         }
@@ -394,17 +486,17 @@ public final class SimulationSession {
         return generatedStateAtFrame(targetFrame) != null;
     }
 
-    /** True once BLOCKED or COMPLETED has been reached and confirmed. */
+    /** True once every unit is BLOCKED or COMPLETED and the frame is confirmed. */
     public boolean isTerminal() {
         return terminalFrame >= 0;
     }
 
-    /** Terminal state frame, or -1 while the route is still live. */
+    /** Terminal frame, or -1 while any unit still lives. */
     public int terminalFrame() {
         return terminalFrame;
     }
 
-    /** Number of contiguous states currently generated, including S[0]. */
+    /** Number of contiguous frames currently generated, including S[0]. */
     public int generatedFrameCount() {
         return timeline.size();
     }
@@ -414,8 +506,8 @@ public final class SimulationSession {
         return timeline.size() - 1;
     }
 
-    /** Immutable copy of all generated states for actual-trajectory rendering. */
-    public List<UiSnapshot> generatedStates() {
+    /** Immutable copy of all generated frames for actual-trajectory rendering. */
+    public List<UiFrame> generatedStates() {
         return timeline.asList();
     }
 
@@ -429,10 +521,13 @@ public final class SimulationSession {
         return SimulationTime.parseFrame(text);
     }
 
+    // ----- combat injections ---------------------------------------------------
+
     /**
-     * Records a stun starting with the next tick. Recording alone never
-     * mutates the simulator, so replays stay deterministic: the event is
-     * re-applied at the same frame whenever the timeline is replayed.
+     * Records a stun on the selected unit starting with the next tick.
+     * Recording alone never mutates the simulator, so replays stay
+     * deterministic: the event is re-applied at the same frame whenever the
+     * timeline is replayed.
      */
     public synchronized void applyStun(float seconds) {
         if (!Float.isFinite(seconds) || seconds < 0f) {
@@ -441,7 +536,7 @@ public final class SimulationSession {
         recordRunEvent(EventKind.STUN, Vec2f.ZERO, seconds);
     }
 
-    /** Records a constant-velocity push starting with the next tick. */
+    /** Records a constant-velocity push on the selected unit starting with the next tick. */
     public synchronized void applyDisplacement(float velocityX, float velocityY, float seconds) {
         if (!Float.isFinite(velocityX) || !Float.isFinite(velocityY)
                 || !Float.isFinite(seconds) || seconds < 0f) {
@@ -450,21 +545,22 @@ public final class SimulationSession {
         recordRunEvent(EventKind.DISPLACE, new Vec2f(velocityX, velocityY), seconds);
     }
 
-    /** Records a bind or unbind starting with the next tick. */
+    /** Records a bind or unbind on the selected unit starting with the next tick. */
     public synchronized void setUnitBound(boolean bound) {
         recordRunEvent(bound ? EventKind.BIND : EventKind.UNBIND, Vec2f.ZERO, 0f);
     }
 
     private void recordRunEvent(EventKind kind, Vec2f velocity, float seconds) {
-        int frame = simulator.frame();
+        int frame = currentFrame();
         if (terminalFrame >= 0 && frame >= terminalFrame) {
             throw new IllegalStateException("模拟已到达终态，无法注入状态");
         }
-        UnitMode mode = simulator.unit().mode();
+        PathfindingSimulator target = stage.simulator(selectedDraft);
+        UnitMode mode = target.unit().mode();
         if (mode == UnitMode.BLOCKED || mode == UnitMode.COMPLETED || mode == UnitMode.VANISHED) {
             throw new IllegalStateException("当前状态" + modeLabel(mode) + "下无法注入");
         }
-        runEvents.add(new RunEvent(frame, kind, velocity, seconds));
+        runEvents.add(new RunEvent(frame, selectedDraft, kind, velocity, seconds));
     }
 
     private void applyRunEvents(int frame, long globalFrame) {
@@ -472,11 +568,12 @@ public final class SimulationSession {
             if (event.frame() != frame) {
                 continue;
             }
+            PathfindingSimulator target = stage.simulator(event.unit());
             switch (event.kind()) {
-                case STUN -> simulator.stun(globalFrame, event.seconds());
-                case DISPLACE -> simulator.displace(globalFrame, event.velocity(), event.seconds());
-                case BIND -> simulator.setBound(true);
-                case UNBIND -> simulator.setBound(false);
+                case STUN -> target.stun(globalFrame, event.seconds());
+                case DISPLACE -> target.displace(globalFrame, event.velocity(), event.seconds());
+                case BIND -> target.setBound(true);
+                case UNBIND -> target.setBound(false);
             }
         }
     }
@@ -485,18 +582,25 @@ public final class SimulationSession {
         STUN, DISPLACE, BIND, UNBIND
     }
 
-    private record RunEvent(int frame, EventKind kind, Vec2f velocity, float seconds) {
+    private record RunEvent(int frame, int unit, EventKind kind, Vec2f velocity, float seconds) {
     }
+
+    // ----- export / import ------------------------------------------------------
 
     /** Canonical, non-misleading display for a frame time. */
     public static String formatFrameTime(long frame) {
         return SimulationTime.formatFrame(frame);
     }
 
-    /** Serializes the current scenario (map, route, movement settings) as importable text. */
+    /** Serializes the current scenario (map, all routes, movement settings) as importable text. */
     public synchronized String exportScenario() {
-        return ScenarioCodec.format(width, height, terrainView(), spawn, endpoint,
-                checkpoints, movementMode, attributeSpeed, allowDiagonalMove);
+        List<ScenarioCodec.UnitSpec> units = new ArrayList<>(drafts.size());
+        for (UnitDraft draft : drafts) {
+            units.add(new ScenarioCodec.UnitSpec(draft.spawn(), draft.endpoint(),
+                    List.copyOf(draft.checkpoints()), draft.movementMode(),
+                    draft.attributeSpeed(), draft.allowDiagonalMove()));
+        }
+        return ScenarioCodec.format(width, height, terrainView(), units);
     }
 
     /**
@@ -513,38 +617,43 @@ public final class SimulationSession {
                         + ") conflicts with a route point");
             }
         }
-        MovementMode parsedMovementMode =
-                parsed.movementMode() == UiMovementMode.GROUND ? MovementMode.GROUND : MovementMode.FLYING;
-        new Route(toCorePoint(parsed.spawn().center()), toCorePoint(parsed.endpoint().center()),
-                toCoreCheckpoints(new ArrayList<>(parsed.checkpoints())), parsedMovementMode,
-                parsed.allowDiagonalMove(), true, false);
+        for (ScenarioCodec.UnitSpec unit : parsed.units()) {
+            MovementMode parsedMovementMode = unit.movementMode() == UiMovementMode.GROUND
+                    ? MovementMode.GROUND : MovementMode.FLYING;
+            new Route(toCorePoint(unit.spawn().center()), toCorePoint(unit.endpoint().center()),
+                    toCoreCheckpoints(new ArrayList<>(unit.checkpoints())), parsedMovementMode,
+                    unit.allowDiagonalMove(), true, false);
+        }
         initializeScenario(parsed.width(), parsed.height());
-        spawn = parsed.spawn();
-        endpoint = parsed.endpoint();
-        checkpoints.clear();
-        checkpoints.addAll(parsed.checkpoints());
-        movementMode = parsed.movementMode();
-        attributeSpeed = parsed.speed();
-        allowDiagonalMove = parsed.allowDiagonalMove();
+        drafts.clear();
+        for (ScenarioCodec.UnitSpec unit : parsed.units()) {
+            drafts.add(new UnitDraft(unit.spawn(), unit.endpoint(),
+                    new ArrayList<>(unit.checkpoints()), unit.movementMode(),
+                    unit.speed(), unit.allowDiagonalMove()));
+        }
+        selectedDraft = 0;
         for (ScenarioCodec.TerrainEntry entry : parsed.terrain()) {
             setTerrainDirect(entry.cell(), entry.terrain());
         }
         rebuildSimulator();
     }
 
-    /** One CSV row per generated frame, including S[0]. */
+    /** One CSV row per unit and generated frame, including S[0]. */
     public synchronized String exportTraceCsv() {
         StringBuilder csv = new StringBuilder();
-        csv.append("frame,mode,checkpoint,completed,entity_x,entity_y,cursor_x,cursor_y,")
+        csv.append("unit,frame,mode,checkpoint,completed,entity_x,entity_y,cursor_x,cursor_y,")
                 .append("velocity_x,velocity_y,avoidance_x,avoidance_y,transition\n");
-        for (UiSnapshot snapshot : timeline.asList()) {
-            appendSnapshotRow(csv, snapshot);
+        for (UiFrame frame : timeline.asList()) {
+            for (int unit = 0; unit < frame.units().size(); unit++) {
+                appendSnapshotRow(csv, unit, frame.units().get(unit));
+            }
         }
         return csv.toString();
     }
 
-    private static void appendSnapshotRow(StringBuilder csv, UiSnapshot snapshot) {
-        csv.append(snapshot.frame()).append(',')
+    private static void appendSnapshotRow(StringBuilder csv, int unit, UiSnapshot snapshot) {
+        csv.append(unit).append(',')
+                .append(snapshot.frame()).append(',')
                 .append(csvField(snapshot.unitMode())).append(',')
                 .append(snapshot.activeCheckpoint()).append(',')
                 .append(snapshot.completed()).append(',')
@@ -567,12 +676,14 @@ public final class SimulationSession {
     }
 
     private static boolean conflictsWithRoute(UiCell cell, ScenarioCodec.Scenario parsed) {
-        if (cell.equals(parsed.spawn()) || cell.equals(parsed.endpoint())) {
-            return true;
-        }
-        for (UiCheckpoint checkpoint : parsed.checkpoints()) {
-            if (cell.equals(checkpoint.cell())) {
+        for (ScenarioCodec.UnitSpec unit : parsed.units()) {
+            if (cell.equals(unit.spawn()) || cell.equals(unit.endpoint())) {
                 return true;
+            }
+            for (UiCheckpoint checkpoint : unit.checkpoints()) {
+                if (cell.equals(checkpoint.cell())) {
+                    return true;
+                }
             }
         }
         return false;
@@ -602,6 +713,37 @@ public final class SimulationSession {
         };
     }
 
+    // ----- internal scenario state ----------------------------------------------
+
+    private UnitDraft draft() {
+        return drafts.get(selectedDraft);
+    }
+
+    private void updateDraft(UnitDraft updated) {
+        drafts.set(selectedDraft, updated);
+    }
+
+    private int currentFrame() {
+        return stage.simulator(0).frame();
+    }
+
+    private FrameTrace lastTraceFor(int unitIndex) {
+        return unitIndex < lastTraces.size() ? lastTraces.get(unitIndex) : null;
+    }
+
+    private boolean trajectoryBreakFor(int unitIndex) {
+        return unitIndex < trajectoryBreaks.size() && trajectoryBreaks.get(unitIndex);
+    }
+
+    private boolean allUnitsTerminal() {
+        for (int index = 0; index < drafts.size(); index++) {
+            if (!isTerminalMode(stage.simulator(index).unit().mode())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private void initializeScenario(int newWidth, int newHeight) {
         if (newWidth < MINIMUM_DIMENSION || newHeight < MINIMUM_DIMENSION) {
             throw new IllegalArgumentException("Map dimensions must be at least " + MINIMUM_DIMENSION);
@@ -613,12 +755,13 @@ public final class SimulationSession {
             terrain[index] = UiTerrain.OPEN;
         }
         int centerY = height / 2;
-        spawn = new UiCell(0, centerY);
-        endpoint = new UiCell(width - 1, centerY);
-        checkpoints.clear();
-        lastTrace = null;
+        drafts.clear();
+        drafts.add(new UnitDraft(new UiCell(0, centerY), new UiCell(width - 1, centerY),
+                new ArrayList<>(), UiMovementMode.GROUND, 1f, true));
+        selectedDraft = 0;
+        lastTraces = List.of();
+        trajectoryBreaks = List.of();
         terminalFrame = -1;
-        trajectoryBreak = false;
         invalidateScenarioCaches();
     }
 
@@ -634,40 +777,39 @@ public final class SimulationSession {
                 map.setRule(new TileCoord(x, y), coreRule(terrain[indexOf(cell)]));
             }
         }
-
-        route = new Route(
-                toCorePoint(spawn.center()),
-                toCorePoint(endpoint.center()),
-                toCoreCheckpoints(checkpoints),
-                coreMovementMode(),
-                allowDiagonalMove,
-                true,
-                false);
-        UnitConfig config = movementMode == UiMovementMode.GROUND
-                ? UnitConfig.normalGround(attributeSpeed)
-                : UnitConfig.normalFlying(attributeSpeed);
-        simulator = new PathfindingSimulator(map, route, config);
-        lastTrace = null;
+        List<Stage.StageUnit> units = new ArrayList<>(drafts.size());
+        for (UnitDraft draft : drafts) {
+            units.add(new Stage.StageUnit(
+                    new Route(toCorePoint(draft.spawn().center()), toCorePoint(draft.endpoint().center()),
+                            toCoreCheckpoints(draft.checkpoints()),
+                            coreMovementMode(draft.movementMode()), draft.allowDiagonalMove(),
+                            true, false),
+                    draft.movementMode() == UiMovementMode.GROUND
+                            ? UnitConfig.normalGround(draft.attributeSpeed())
+                            : UnitConfig.normalFlying(draft.attributeSpeed())));
+        }
+        stage = new Stage(map, units);
+        lastTraces = List.of();
         globalFrame = 0L;
         if (resetTimeline) {
             terminalFrame = -1;
         }
-        trajectoryBreak = false;
+        trajectoryBreaks = List.of();
         invalidateScenarioCaches();
-        if (isTerminalMode(simulator.unit().mode())) {
+        if (allUnitsTerminal()) {
             terminalFrame = 0;
         }
         if (resetTimeline) {
             scenarioRevision++;
-            timeline = Timeline.EMPTY.append(snapshot());
+            timeline = Timeline.EMPTY.append(snapshotFrame());
             runEvents.clear();
         }
     }
 
     private void ensureTimelineInitialized() {
         if (timeline.size() == 0) {
-            timeline = Timeline.EMPTY.append(snapshot());
-            if (isTerminalMode(simulator.unit().mode())) {
+            timeline = Timeline.EMPTY.append(snapshotFrame());
+            if (allUnitsTerminal()) {
                 terminalFrame = 0;
             }
         }
@@ -675,40 +817,40 @@ public final class SimulationSession {
 
     private void invalidateScenarioCaches() {
         cachedTerrainView = null;
-        cachedCheckpointView = null;
         cachedSegmentSource = null;
         cachedSegments = List.of();
     }
 
-    private PathMap activePathMap() {
+    private PathMap activePathMap(PathfindingSimulator simulator, UnitDraft unitDraft) {
         RouteProgress progress = simulator.unit().routeProgress();
         int checkpointIndex = progress.checkpointIndex();
-        return !progress.completed() && checkpointIndex < route.checkpoints().size()
+        return !progress.completed() && checkpointIndex < unitDraft.checkpoints().size()
                 && simulator.checkpointOwnsPathMap(checkpointIndex)
                 ? simulator.pathMapForCheckpoint(checkpointIndex)
                 : simulator.endpointPathMap();
     }
 
-    private UiPoint currentTarget(PathMap activePathMap) {
+    private UiPoint currentTarget(PathfindingSimulator simulator, UnitDraft unitDraft,
+                                  PathMap activePathMap, int unitIndex) {
         if (simulator.unit().routeProgress().completed()) {
-            return toUiPoint(route.endpoint());
+            return unitDraft.endpoint().center();
         }
-        if (lastTrace != null && lastTrace.target() != null) {
-            return toUiPoint(lastTrace.target());
+        FrameTrace trace = lastTraceFor(unitIndex);
+        if (trace != null && trace.target() != null) {
+            return toUiPoint(trace.target());
         }
         return toUiPoint(activePathMap.target().center());
     }
 
-    private List<UiPathSegment> pathSegments(PathMap activePathMap) {
+    private List<UiPathSegment> pathSegments(PathMap activePathMap, MovementMode movement) {
         if (cachedSegmentSource == activePathMap) {
             return cachedSegments;
         }
         List<UiPathSegment> segments = new ArrayList<>();
-        MovementMode coreMovementMode = coreMovementMode();
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 TileCoord cell = new TileCoord(x, y);
-                if (!map.passable(cell, coreMovementMode) || !activePathMap.reachable(cell)) {
+                if (!map.passable(cell, movement) || !activePathMap.reachable(cell)) {
                     continue;
                 }
                 TileCoord nextNode = activePathMap.nextNode(cell);
@@ -729,20 +871,15 @@ public final class SimulationSession {
         return cachedTerrainView;
     }
 
-    private List<UiCheckpoint> checkpointList() {
-        if (cachedCheckpointView == null) {
-            cachedCheckpointView = List.copyOf(checkpoints);
-        }
-        return cachedCheckpointView;
-    }
-
     private boolean isRouteCell(UiCell cell) {
-        if (cell.equals(spawn) || cell.equals(endpoint)) {
-            return true;
-        }
-        for (UiCheckpoint checkpoint : checkpoints) {
-            if (cell.equals(checkpoint.cell())) {
+        for (UnitDraft draft : drafts) {
+            if (cell.equals(draft.spawn()) || cell.equals(draft.endpoint())) {
                 return true;
+            }
+            for (UiCheckpoint checkpoint : draft.checkpoints()) {
+                if (cell.equals(checkpoint.cell())) {
+                    return true;
+                }
             }
         }
         return false;
@@ -766,7 +903,7 @@ public final class SimulationSession {
         return cell.y() * width + cell.x();
     }
 
-    private MovementMode coreMovementMode() {
+    private static MovementMode coreMovementMode(UiMovementMode movementMode) {
         return movementMode == UiMovementMode.GROUND ? MovementMode.GROUND : MovementMode.FLYING;
     }
 
@@ -859,13 +996,13 @@ public final class SimulationSession {
      * grow without bound by design.
      */
     private static final class Timeline {
-        private static final Timeline EMPTY = new Timeline(new UiSnapshot[0], 0);
+        private static final Timeline EMPTY = new Timeline(new UiFrame[0], 0);
         private static final int MINIMUM_CAPACITY = 64;
 
-        private final UiSnapshot[] items;
+        private final UiFrame[] items;
         private final int size;
 
-        private Timeline(UiSnapshot[] items, int size) {
+        private Timeline(UiFrame[] items, int size) {
             this.items = items;
             this.size = size;
         }
@@ -874,15 +1011,15 @@ public final class SimulationSession {
             return size;
         }
 
-        private UiSnapshot get(int index) {
+        private UiFrame get(int index) {
             if (index < 0 || index >= size) {
                 throw new IndexOutOfBoundsException("Frame " + index + " is not generated");
             }
             return items[index];
         }
 
-        private Timeline append(UiSnapshot value) {
-            UiSnapshot[] target = items;
+        private Timeline append(UiFrame value) {
+            UiFrame[] target = items;
             if (size == target.length) {
                 target = Arrays.copyOf(items, Math.max(MINIMUM_CAPACITY, size * 2));
             }
@@ -890,24 +1027,24 @@ public final class SimulationSession {
             return new Timeline(target, size + 1);
         }
 
-        private Timeline replace(int index, UiSnapshot value) {
+        private Timeline replace(int index, UiFrame value) {
             if (index < 0 || index >= size) {
                 throw new IndexOutOfBoundsException("Timeline gap before frame " + index);
             }
             if (items[index] == value) {
                 return this;
             }
-            UiSnapshot[] copy = items.clone();
+            UiFrame[] copy = items.clone();
             copy[index] = value;
             return new Timeline(copy, size);
         }
 
-        private List<UiSnapshot> asList() {
-            UiSnapshot[] source = items;
+        private List<UiFrame> asList() {
+            UiFrame[] source = items;
             int count = size;
             return new AbstractList<>() {
                 @Override
-                public UiSnapshot get(int index) {
+                public UiFrame get(int index) {
                     if (index < 0 || index >= count) {
                         throw new IndexOutOfBoundsException("Frame " + index + " is not generated");
                     }

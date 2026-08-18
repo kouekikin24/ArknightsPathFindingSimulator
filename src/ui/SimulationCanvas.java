@@ -28,6 +28,14 @@ public final class SimulationCanvas extends JComponent {
     private static final Color GRID_LINE = new Color(191, 204, 196);
     private static final Color PATH = new Color(68, 135, 116);
     private static final Color TRAJECTORY = new Color(198, 57, 46);
+    private static final Color[] UNIT_TRAJECTORY_COLORS = {
+            new Color(198, 57, 46), new Color(52, 101, 192),
+            new Color(40, 148, 82), new Color(171, 96, 40)
+    };
+    private static final Color[] UNIT_COLORS = {
+            new Color(222, 89, 64), new Color(64, 132, 222),
+            new Color(64, 190, 96), new Color(205, 140, 60)
+    };
     private static final double TRAJECTORY_HIT_RADIUS = 30d;
     private static final int HOVER_INVALIDATION_WIDTH = 520;
     private static final int HOVER_INVALIDATION_HEIGHT = 140;
@@ -39,7 +47,8 @@ public final class SimulationCanvas extends JComponent {
 
     private final Consumer<UiCell> cellHandler;
     private UiSnapshot snapshot;
-    private List<UiSnapshot> trajectoryStates = List.of();
+    private List<UiSnapshot> units = List.of();
+    private List<List<UiSnapshot>> trajectories = List.of();
     private boolean showPath;
     private boolean showTrajectory = true;
     private boolean browseMode;
@@ -48,6 +57,7 @@ public final class SimulationCanvas extends JComponent {
     private Point mapPanViewStart;
     private Point hoverPosition;
     private UiSnapshot hoverSample;
+    private int hoverUnit;
     private double zoom = 1d;
     private int viewportWidth = 1;
     private int viewportHeight = 1;
@@ -142,15 +152,27 @@ public final class SimulationCanvas extends JComponent {
         repaint();
     }
 
-    /**
-     * Sets the trajectory samples. Callers must pass lists they never mutate
-     * afterwards; the canvas keeps the reference so a playback frame does not
-     * copy an ever-growing timeline.
-     */
-    public void setTrajectory(List<UiSnapshot> states) {
-        trajectoryStates = states == null ? List.of() : states;
+    /** Sets every unit's current state; the snapshot still owns terrain and markers. */
+    public void setUnits(List<UiSnapshot> value) {
+        units = value == null ? List.of() : value;
         refreshHoverSample();
         repaint();
+    }
+
+    /**
+     * Sets one trajectory per unit. Callers must pass lists they never mutate
+     * afterwards; the canvas keeps the references so a playback frame does not
+     * copy an ever-growing timeline.
+     */
+    public void setTrajectories(List<List<UiSnapshot>> value) {
+        trajectories = value == null ? List.of() : value;
+        refreshHoverSample();
+        repaint();
+    }
+
+    /** Single-unit trajectory convenience kept for callers without a stage. */
+    public void setTrajectory(List<UiSnapshot> states) {
+        setTrajectories(states == null ? List.of() : List.of(states));
     }
 
     public void setShowPath(boolean value) {
@@ -304,7 +326,8 @@ public final class SimulationCanvas extends JComponent {
     @Override
     public String getToolTipText(MouseEvent event) {
         UiSnapshot sample = nearestTrajectorySampleAt(event.getX(), event.getY());
-        return sample == null ? null : formatHoverPosition(sample);
+        return sample == null ? null
+                : formatHoverPosition(sample, trajectories.size() > 1 ? hoverUnit : -1);
     }
 
     @Override
@@ -383,43 +406,51 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private void drawTrajectory(Graphics2D canvas) {
-        if (trajectoryStates.size() < 2) {
-            return;
-        }
-        canvas.setColor(TRAJECTORY);
-        canvas.setStroke(new BasicStroke(trajectoryStrokeWidth(),
-                BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER));
-        for (int index = 1; index < trajectoryStates.size(); index++) {
-            UiSnapshot previous = trajectoryStates.get(index - 1);
-            UiSnapshot current = trajectoryStates.get(index);
-            if (current.trajectoryBreak()) {
+        for (int unit = 0; unit < trajectories.size(); unit++) {
+            List<UiSnapshot> trajectoryStates = trajectories.get(unit);
+            if (trajectoryStates.size() < 2) {
                 continue;
             }
-            Path2D.Float segment = new Path2D.Float();
-            segment.moveTo(worldToCanvasXFloat(previous.entityPosition().x()),
-                    worldToCanvasYFloat(previous.entityPosition().y()));
-            segment.lineTo(worldToCanvasXFloat(current.entityPosition().x()),
-                    worldToCanvasYFloat(current.entityPosition().y()));
-            canvas.draw(segment);
+            canvas.setColor(UNIT_TRAJECTORY_COLORS[unit % UNIT_TRAJECTORY_COLORS.length]);
+            canvas.setStroke(new BasicStroke(trajectoryStrokeWidth(),
+                    BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER));
+            for (int index = 1; index < trajectoryStates.size(); index++) {
+                UiSnapshot previous = trajectoryStates.get(index - 1);
+                UiSnapshot current = trajectoryStates.get(index);
+                if (current.trajectoryBreak()) {
+                    continue;
+                }
+                Path2D.Float segment = new Path2D.Float();
+                segment.moveTo(worldToCanvasXFloat(previous.entityPosition().x()),
+                        worldToCanvasYFloat(previous.entityPosition().y()));
+                segment.lineTo(worldToCanvasXFloat(current.entityPosition().x()),
+                        worldToCanvasYFloat(current.entityPosition().y()));
+                canvas.draw(segment);
+            }
         }
     }
 
     private UiSnapshot nearestTrajectorySampleAt(int canvasX, int canvasY) {
-        if (!showTrajectory || trajectoryStates.isEmpty()) {
+        if (!showTrajectory || trajectories.isEmpty()) {
             return null;
         }
         double bestDistanceSquared = TRAJECTORY_HIT_RADIUS * TRAJECTORY_HIT_RADIUS;
         UiSnapshot result = null;
-        for (UiSnapshot sample : trajectoryStates) {
-            double sampleX = worldToCanvasXFloat(sample.entityPosition().x());
-            double sampleY = worldToCanvasYFloat(sample.entityPosition().y());
-            double distanceSquared = distanceSquared(canvasX, canvasY, sampleX, sampleY);
-            if (distanceSquared > bestDistanceSquared) {
-                continue;
+        int resultUnit = 0;
+        for (int unit = 0; unit < trajectories.size(); unit++) {
+            for (UiSnapshot sample : trajectories.get(unit)) {
+                double sampleX = worldToCanvasXFloat(sample.entityPosition().x());
+                double sampleY = worldToCanvasYFloat(sample.entityPosition().y());
+                double distanceSquared = distanceSquared(canvasX, canvasY, sampleX, sampleY);
+                if (distanceSquared > bestDistanceSquared) {
+                    continue;
+                }
+                bestDistanceSquared = distanceSquared;
+                result = sample;
+                resultUnit = unit;
             }
-            bestDistanceSquared = distanceSquared;
-            result = sample;
         }
+        hoverUnit = resultUnit;
         return result;
     }
 
@@ -470,7 +501,8 @@ public final class SimulationCanvas extends JComponent {
         if (hoverPosition == null || hoverSample == null) {
             return;
         }
-        String text = formatHoverPosition(hoverSample);
+        String text = formatHoverPosition(hoverSample,
+                trajectories.size() > 1 ? hoverUnit : -1);
         canvas.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
         java.awt.FontMetrics metrics = canvas.getFontMetrics();
         int padding = 6;
@@ -499,12 +531,13 @@ public final class SimulationCanvas extends JComponent {
         }
         int x = worldToCanvasX(hoverSample.entityPosition().x());
         int y = worldToCanvasY(hoverSample.entityPosition().y());
-        canvas.setColor(TRAJECTORY);
+        canvas.setColor(UNIT_TRAJECTORY_COLORS[hoverUnit % UNIT_TRAJECTORY_COLORS.length]);
         canvas.fillOval(x - 1, y - 1, 3, 3);
     }
 
-    private static String formatHoverPosition(UiSnapshot sample) {
-        return String.format(Locale.ROOT, "\u7b2c %d \u5e27\uff1a\u4f4d\u7f6e (%.4f, %.4f)", sample.frame(),
+    private static String formatHoverPosition(UiSnapshot sample, int unitIndex) {
+        String prefix = unitIndex >= 0 ? "单位 " + (unitIndex + 1) + "，" : "";
+        return String.format(Locale.ROOT, "%s第 %d 帧：位置 (%.4f, %.4f)", prefix, sample.frame(),
                 sample.entityPosition().x(), sample.entityPosition().y());
     }
 
@@ -633,19 +666,31 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private void drawUnit(Graphics2D canvas) {
-        UiPoint entityPosition = snapshot.entityPosition();
+        if (units.isEmpty()) {
+            if (snapshot != null) {
+                drawUnitAt(canvas, snapshot, UNIT_COLORS[0]);
+            }
+            return;
+        }
+        for (int index = 0; index < units.size(); index++) {
+            drawUnitAt(canvas, units.get(index), UNIT_COLORS[index % UNIT_COLORS.length]);
+        }
+    }
+
+    private void drawUnitAt(Graphics2D canvas, UiSnapshot unitSnapshot, Color color) {
+        UiPoint entityPosition = unitSnapshot.entityPosition();
         int x = worldToCanvasX(entityPosition.x());
         int y = worldToCanvasY(entityPosition.y());
-        drawVector(canvas, entityPosition, snapshot.inertiaVelocity(), new Color(196, 69, 51), 2.2f);
-        drawVector(canvas, entityPosition, snapshot.givenDirection(), new Color(28, 118, 108), 0.72f);
+        drawVector(canvas, entityPosition, unitSnapshot.inertiaVelocity(), new Color(196, 69, 51), 2.2f);
+        drawVector(canvas, entityPosition, unitSnapshot.givenDirection(), new Color(28, 118, 108), 0.72f);
         int radius = Math.max(8, worldLengthToPixels(0.2d));
-        canvas.setColor(ENTITY);
+        canvas.setColor(color);
         canvas.fillOval(x - radius, y - radius, radius * 2, radius * 2);
         canvas.setColor(Color.WHITE);
         canvas.setStroke(new BasicStroke(Math.max(1.5f, (float) (zoom * 0.045d))));
         canvas.drawOval(x - radius, y - radius, radius * 2, radius * 2);
 
-        UiPoint cursorPosition = snapshot.cursorPosition();
+        UiPoint cursorPosition = unitSnapshot.cursorPosition();
         int cursorX = worldToCanvasX(cursorPosition.x());
         int cursorY = worldToCanvasY(cursorPosition.y());
         int cross = Math.max(5, worldLengthToPixels(0.125d));
