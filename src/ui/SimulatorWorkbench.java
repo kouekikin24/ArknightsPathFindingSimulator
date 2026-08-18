@@ -99,6 +99,11 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 3600.0d, 0.1d));
     private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 100, 1));
     private final JButton addCheckpointButton = new JButton("添加");
+    private final JSpinner stunSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d));
+    private final JSpinner pushXSpinner = new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d));
+    private final JSpinner pushYSpinner = new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d));
+    private final JSpinner pushSecondsSpinner = new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, 10.0d, 0.1d));
+    private final JToggleButton bindToggle = new JToggleButton("束缚");
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
     private final JList<String> checkpointList = new JList<>(checkpointModel);
 
@@ -261,6 +266,8 @@ public final class SimulatorWorkbench extends JFrame {
         content.add(Box.createVerticalStrut(8));
         content.add(createRuntimeSection());
         content.add(Box.createVerticalStrut(8));
+        content.add(createCombatSection());
+        content.add(Box.createVerticalStrut(8));
         content.add(createCheckpointSection());
         JScrollPane scroll = new JScrollPane(content, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
@@ -348,6 +355,98 @@ public final class SimulatorWorkbench extends JFrame {
         addStatistic(section, 7, "目标", targetValue);
         addStatistic(section, 8, "下一节点", nextNodeValue);
         addStatistic(section, 9, "事件", statusValue);
+        return section;
+    }
+
+    private JPanel createCombatSection() {
+        JPanel section = section("战斗状态");
+        section.setLayout(new GridBagLayout());
+        GridBagConstraints c = baseConstraints();
+
+        JLabel stun = new JLabel("眩晕");
+        stun.setForeground(new Color(94, 111, 101));
+        c.gridx = 0;
+        c.gridy = 0;
+        c.weightx = 0d;
+        section.add(stun, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        JPanel stunRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        stunRow.setOpaque(false);
+        stunRow.add(stunSecondsSpinner);
+        stunRow.add(new JLabel("秒"));
+        JButton stunButton = new JButton("注入");
+        stunButton.setToolTipText("下一帧起眩晕指定秒数");
+        stunButton.addActionListener(event -> {
+            try {
+                session.applyStun(((Number) stunSecondsSpinner.getValue()).floatValue());
+                footerStatus.setText("已安排：下一帧起眩晕 "
+                        + ((Number) stunSecondsSpinner.getValue()).floatValue() + " 秒");
+            } catch (RuntimeException error) {
+                footerStatus.setText("无法眩晕：" + error.getMessage());
+            }
+        });
+        stunRow.add(stunButton);
+        section.add(stunRow, c);
+
+        JLabel push = new JLabel("击退");
+        push.setForeground(new Color(94, 111, 101));
+        c.gridx = 0;
+        c.gridy = 1;
+        c.weightx = 0d;
+        section.add(push, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        JPanel pushRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        pushRow.setOpaque(false);
+        pushRow.add(pushXSpinner);
+        pushRow.add(pushYSpinner);
+        pushRow.add(pushSecondsSpinner);
+        pushRow.add(new JLabel("秒"));
+        JButton pushButton = new JButton("注入");
+        pushButton.setToolTipText("下一帧起以给定速度(格/秒)推动指定秒数");
+        pushButton.addActionListener(event -> {
+            try {
+                session.applyDisplacement(
+                        ((Number) pushXSpinner.getValue()).floatValue(),
+                        ((Number) pushYSpinner.getValue()).floatValue(),
+                        ((Number) pushSecondsSpinner.getValue()).floatValue());
+                footerStatus.setText("已安排：下一帧起击退 ("
+                        + ((Number) pushXSpinner.getValue()).floatValue() + ", "
+                        + ((Number) pushYSpinner.getValue()).floatValue() + ") 持续 "
+                        + ((Number) pushSecondsSpinner.getValue()).floatValue() + " 秒");
+            } catch (RuntimeException error) {
+                footerStatus.setText("无法击退：" + error.getMessage());
+            }
+        });
+        pushRow.add(pushButton);
+        section.add(pushRow, c);
+
+        JLabel bind = new JLabel("束缚");
+        bind.setForeground(new Color(94, 111, 101));
+        c.gridx = 0;
+        c.gridy = 2;
+        c.weightx = 0d;
+        section.add(bind, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        bindToggle.setToolTipText("束缚期间单位不移动（下一帧起生效）");
+        bindToggle.addActionListener(event -> {
+            if (refreshing) {
+                return;
+            }
+            try {
+                session.setUnitBound(bindToggle.isSelected());
+                footerStatus.setText(bindToggle.isSelected()
+                        ? "已安排：下一帧起束缚" : "已安排：下一帧起解除束缚");
+            } catch (RuntimeException error) {
+                footerStatus.setText("无法束缚：" + error.getMessage());
+            }
+        });
+        JPanel bindRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        bindRow.setOpaque(false);
+        bindRow.add(bindToggle);
+        section.add(bindRow, c);
         return section;
     }
 
@@ -796,7 +895,8 @@ public final class SimulatorWorkbench extends JFrame {
             if (!timeInput.hasFocus()) {
                 timeInput.setText(Long.toString(snapshot.frame()));
             }
-            modeValue.setText(snapshot.unitMode());
+            modeValue.setText(snapshot.unitMode() + (snapshot.bound() ? "，束缚" : ""));
+            bindToggle.setSelected(snapshot.bound());
             checkpointValue.setText(checkpointLabel(snapshot));
             positionValue.setText(formatPoint(snapshot.entityPosition()));
             velocityValue.setText(formatPoint(snapshot.inertiaVelocity()));

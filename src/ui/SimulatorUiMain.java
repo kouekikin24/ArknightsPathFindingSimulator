@@ -55,6 +55,7 @@ public final class SimulatorUiMain {
         verifyTerminalFlagAndTerrainRejection();
         verifyScenarioRoundTrip();
         verifyCheckpointEditing();
+        verifyCombatStateInjection();
         System.out.println("UI session verification passed.");
     }
 
@@ -372,6 +373,97 @@ public final class SimulatorUiMain {
         }
     }
 
+    private static void verifyCombatStateInjection() {
+        SimulationSession stunSession = new SimulationSession();
+        stunSession.applyStun(0.2f);
+        UiSnapshot stunned = stunSession.tick();
+        if (!"眩晕".equals(stunned.unitMode())) {
+            throw new IllegalStateException("Stun event did not take effect on the next tick");
+        }
+        UiPoint held = stunned.entityPosition();
+        for (int frame = 0; frame < 5; frame++) {
+            stunSession.tick();
+        }
+        UiSnapshot stillStunned = stunSession.snapshot();
+        if (!"眩晕".equals(stillStunned.unitMode()) || !held.equals(stillStunned.entityPosition())) {
+            throw new IllegalStateException("Stunned unit moved or left the mode early");
+        }
+        stunSession.tick();
+        if (!"移动".equals(stunSession.snapshot().unitMode())) {
+            throw new IllegalStateException("Stun did not expire after its duration");
+        }
+
+        SimulationSession pushSession = new SimulationSession();
+        pushSession.newScenario(8, 3);
+        pushSession.applyDisplacement(0f, -3f, 0.15f);
+        UiSnapshot pushed = pushSession.tick();
+        if (!"位移".equals(pushed.unitMode())) {
+            throw new IllegalStateException("Displacement event did not take effect on the next tick");
+        }
+        for (int frame = 0; frame < 4; frame++) {
+            pushSession.tick();
+        }
+        UiSnapshot stillPushed = pushSession.snapshot();
+        if (!"位移".equals(stillPushed.unitMode())
+                || Math.abs(stillPushed.entityPosition().y() - 1.0f) > 0.001f) {
+            throw new IllegalStateException("Displaced unit did not move at constant velocity");
+        }
+        pushSession.tick();
+        if (!"移动".equals(pushSession.snapshot().unitMode())) {
+            throw new IllegalStateException("Displacement did not expire into movement");
+        }
+
+        SimulationSession bindSession = new SimulationSession();
+        bindSession.setUnitBound(true);
+        UiSnapshot bound = bindSession.tick();
+        if (!bound.bound()) {
+            throw new IllegalStateException("Bind event did not take effect on the next tick");
+        }
+        bindSession.tick();
+        if (!bindSession.snapshot().entityPosition().equals(bound.entityPosition())) {
+            throw new IllegalStateException("Bound unit moved");
+        }
+        bindSession.setUnitBound(false);
+        bindSession.tick();
+        if (bindSession.snapshot().bound()
+                || bindSession.snapshot().entityPosition().equals(bound.entityPosition())) {
+            throw new IllegalStateException("Released unit did not resume movement");
+        }
+
+        SimulationSession replay = new SimulationSession();
+        replay.applyStun(0.2f);
+        replay.tick();
+        replay.tick();
+        replay.applyDisplacement(-2f, 0f, 0.1f);
+        replay.tick();
+        replay.tick();
+        replay.tick();
+        List<UiPoint> first = new java.util.ArrayList<>();
+        for (int frame = 0; frame <= 5; frame++) {
+            first.add(replay.generatedStateAtFrame(frame).entityPosition());
+        }
+        replay.seekFrame(0);
+        for (int frame = 0; frame <= 5; frame++) {
+            assertFloatBits(first.get(frame), replay.generatedStateAtFrame(frame).entityPosition(),
+                    "injection replay frame " + frame);
+        }
+
+        SimulationSession terminal = new SimulationSession();
+        terminal.newScenario(4, 3);
+        terminal.setTerrain(new UiCell(1, 0), UiTerrain.WALL);
+        terminal.setTerrain(new UiCell(1, 1), UiTerrain.WALL);
+        terminal.setTerrain(new UiCell(1, 2), UiTerrain.WALL);
+        terminal.tick();
+        try {
+            terminal.applyStun(1f);
+            throw new IllegalStateException("Injection after the terminal frame was accepted");
+        } catch (IllegalStateException expected) {
+            if (expected.getMessage() == null || !expected.getMessage().contains("终态")) {
+                throw new IllegalStateException("Terminal injection error was not reported");
+            }
+        }
+    }
+
     private static void verifyTrajectoryTooltip(SimulationCanvas canvas) {
         UiSnapshot first = tooltipSnapshot(3, new UiPoint(2f, 2f), false);
         UiSnapshot second = tooltipSnapshot(4, new UiPoint(4f, 2f), false);
@@ -482,7 +574,7 @@ public final class SimulatorUiMain {
     private static UiSnapshot portalSnapshot(int frame, UiPoint entityPosition, boolean trajectoryBreak) {
         return new UiSnapshot(8, 3, java.util.Collections.nCopies(24, UiTerrain.OPEN),
                 new UiPoint(0.5f, 1.5f), new UiPoint(7.5f, 1.5f), List.of(),
-                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false,
+                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false, false,
                 entityPosition, entityPosition, UiPoint.ZERO, UiPoint.ZERO, UiPoint.ZERO,
                 new UiCell(0, 1), null, null, false, "APPEAR_AT_POS", 0f, List.of(), trajectoryBreak);
     }
@@ -490,7 +582,7 @@ public final class SimulatorUiMain {
     private static UiSnapshot tooltipSnapshot(int frame, UiPoint entityPosition, boolean trajectoryBreak) {
         return new UiSnapshot(8, 3, java.util.Collections.nCopies(24, UiTerrain.OPEN),
                 new UiPoint(0.5f, 1.5f), new UiPoint(7.5f, 1.5f), List.of(),
-                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false,
+                UiMovementMode.GROUND, 1f, true, frame, "移动", 0, false, false, false,
                 entityPosition, entityPosition, UiPoint.ZERO, UiPoint.ZERO, UiPoint.ZERO,
                 new UiCell(0, 1), null, null, false, "", 0f, List.of(), trajectoryBreak);
     }

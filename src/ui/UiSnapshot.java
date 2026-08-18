@@ -16,6 +16,7 @@ public record UiSnapshot(
         int activeCheckpoint,
         boolean completed,
         boolean terminal,
+        boolean bound,
         UiPoint entityPosition,
         UiPoint cursorPosition,
         UiPoint inertiaVelocity,

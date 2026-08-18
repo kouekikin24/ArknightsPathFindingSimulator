@@ -40,6 +40,8 @@ public final class SimulationSession {
      * scenario starts a new playback, so its first simulated frame is always 0.
      */
     private long globalFrame;
+    /** Recorded combat injections; each applies before the tick that produces its frame + 1. */
+    private final List<RunEvent> runEvents = new ArrayList<>();
 
     private List<UiTerrain> cachedTerrainView;
     private List<UiCheckpoint> cachedCheckpointView;
@@ -277,6 +279,7 @@ public final class SimulationSession {
             throw new IllegalStateException("Simulation frame drift: expected global frame "
                     + simulator.frame() + ", got " + globalFrame);
         }
+        applyRunEvents(simulator.frame(), globalFrame);
         lastTrace = simulator.tick(globalFrame++);
         int frame = simulator.frame();
         Timeline current = timeline;
@@ -306,6 +309,7 @@ public final class SimulationSession {
                 unit.routeProgress().checkpointIndex(),
                 unit.routeProgress().completed(),
                 isTerminalMode(unit.mode()),
+                unit.bound(),
                 toUiPoint(unit.entityPosition()),
                 toUiPoint(unit.cursorPosition()),
                 toUiPoint(unit.inertiaVelocity()),
@@ -423,6 +427,65 @@ public final class SimulationSession {
     /** Parse an exact UI time/frame field without floating point conversion. */
     public static long parseTimeToFrame(String text) {
         return SimulationTime.parseFrame(text);
+    }
+
+    /**
+     * Records a stun starting with the next tick. Recording alone never
+     * mutates the simulator, so replays stay deterministic: the event is
+     * re-applied at the same frame whenever the timeline is replayed.
+     */
+    public synchronized void applyStun(float seconds) {
+        if (!Float.isFinite(seconds) || seconds < 0f) {
+            throw new IllegalArgumentException("眩晕时长必须是非负有限数");
+        }
+        recordRunEvent(EventKind.STUN, Vec2f.ZERO, seconds);
+    }
+
+    /** Records a constant-velocity push starting with the next tick. */
+    public synchronized void applyDisplacement(float velocityX, float velocityY, float seconds) {
+        if (!Float.isFinite(velocityX) || !Float.isFinite(velocityY)
+                || !Float.isFinite(seconds) || seconds < 0f) {
+            throw new IllegalArgumentException("击退参数必须是有限数，时长非负");
+        }
+        recordRunEvent(EventKind.DISPLACE, new Vec2f(velocityX, velocityY), seconds);
+    }
+
+    /** Records a bind or unbind starting with the next tick. */
+    public synchronized void setUnitBound(boolean bound) {
+        recordRunEvent(bound ? EventKind.BIND : EventKind.UNBIND, Vec2f.ZERO, 0f);
+    }
+
+    private void recordRunEvent(EventKind kind, Vec2f velocity, float seconds) {
+        int frame = simulator.frame();
+        if (terminalFrame >= 0 && frame >= terminalFrame) {
+            throw new IllegalStateException("模拟已到达终态，无法注入状态");
+        }
+        UnitMode mode = simulator.unit().mode();
+        if (mode == UnitMode.BLOCKED || mode == UnitMode.COMPLETED || mode == UnitMode.VANISHED) {
+            throw new IllegalStateException("当前状态" + modeLabel(mode) + "下无法注入");
+        }
+        runEvents.add(new RunEvent(frame, kind, velocity, seconds));
+    }
+
+    private void applyRunEvents(int frame, long globalFrame) {
+        for (RunEvent event : runEvents) {
+            if (event.frame() != frame) {
+                continue;
+            }
+            switch (event.kind()) {
+                case STUN -> simulator.stun(globalFrame, event.seconds());
+                case DISPLACE -> simulator.displace(globalFrame, event.velocity(), event.seconds());
+                case BIND -> simulator.setBound(true);
+                case UNBIND -> simulator.setBound(false);
+            }
+        }
+    }
+
+    private enum EventKind {
+        STUN, DISPLACE, BIND, UNBIND
+    }
+
+    private record RunEvent(int frame, EventKind kind, Vec2f velocity, float seconds) {
     }
 
     /** Canonical, non-misleading display for a frame time. */
@@ -597,6 +660,7 @@ public final class SimulationSession {
         if (resetTimeline) {
             scenarioRevision++;
             timeline = Timeline.EMPTY.append(snapshot());
+            runEvents.clear();
         }
     }
 

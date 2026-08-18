@@ -7,6 +7,8 @@ public final class UnitState {
     private Vec2f cursorPosition;
     private Vec2f inertiaVelocity = Vec2f.ZERO;
     private Vec2f cachedAvoidance = Vec2f.ZERO;
+    private Vec2f displacementVelocity = Vec2f.ZERO;
+    private long timedModeUntilGlobalFrame = Long.MIN_VALUE;
     private UnitMode mode = UnitMode.MOVE;
     private boolean bound;
     private long lastAvoidanceFrame = Long.MIN_VALUE;
@@ -37,6 +39,14 @@ public final class UnitState {
 
     public Vec2f cachedAvoidance() {
         return cachedAvoidance;
+    }
+
+    public Vec2f displacementVelocity() {
+        return displacementVelocity;
+    }
+
+    public long timedModeUntilGlobalFrame() {
+        return timedModeUntilGlobalFrame;
     }
 
     public UnitMode mode() {
@@ -86,6 +96,14 @@ public final class UnitState {
     public void setCachedAvoidance(Vec2f cachedAvoidance, long frame) {
         this.cachedAvoidance = cachedAvoidance;
         this.lastAvoidanceFrame = frame;
+    }
+
+    public void setDisplacementVelocity(Vec2f displacementVelocity) {
+        this.displacementVelocity = displacementVelocity;
+    }
+
+    public void setTimedModeUntilGlobalFrame(long timedModeUntilGlobalFrame) {
+        this.timedModeUntilGlobalFrame = timedModeUntilGlobalFrame;
     }
 
     /** Translate entity and cursor together so their fixed spawn offset remains invariant. */

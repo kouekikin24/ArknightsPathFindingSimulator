@@ -122,8 +122,76 @@ public final class PathfindingSimulator {
         return tick(lastGlobalFrame == Long.MIN_VALUE ? 0L : lastGlobalFrame + 1L);
     }
 
+    /**
+     * Holds the unit motionless (keeping inertia) starting at the supplied
+     * frame for the given seconds, rounded to whole frames.
+     */
+    public void stun(long globalFrame, float seconds) {
+        requireInjectionFrame(globalFrame);
+        requireDuration(seconds);
+        requireInjectionEligible();
+        unit.setMode(UnitMode.STUNNED);
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
+    }
+
+    /**
+     * Pushes the unit at a constant velocity for the given seconds starting at
+     * the supplied frame. Terrain collision still applies; after the duration
+     * the unit returns to steering-driven movement.
+     */
+    public void displace(long globalFrame, Vec2f velocity, float seconds) {
+        requireInjectionFrame(globalFrame);
+        requireDuration(seconds);
+        if (velocity == null || !Float.isFinite(velocity.x()) || !Float.isFinite(velocity.y())) {
+            throw new IllegalArgumentException("Displacement velocity must be finite");
+        }
+        requireInjectionEligible();
+        unit.setMode(UnitMode.DISPLACED);
+        unit.setDisplacementVelocity(velocity);
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
+    }
+
+    /** Binds or releases the unit; a bound unit skips integration in every moving mode. */
+    public void setBound(boolean bound) {
+        unit.setBound(bound);
+    }
+
+    private void requireInjectionFrame(long globalFrame) {
+        if (globalFrame < 0L || (lastGlobalFrame != Long.MIN_VALUE && globalFrame != lastGlobalFrame + 1L)) {
+            throw new IllegalArgumentException(
+                    "Injection frame must be the next frame after " + lastGlobalFrame);
+        }
+    }
+
+    private static void requireDuration(float seconds) {
+        if (!Float.isFinite(seconds) || seconds < 0f) {
+            throw new IllegalArgumentException("Duration must be finite and non-negative");
+        }
+    }
+
+    private void requireInjectionEligible() {
+        if (unit.mode() == UnitMode.BLOCKED || unit.mode() == UnitMode.COMPLETED
+                || unit.mode() == UnitMode.VANISHED) {
+            throw new IllegalStateException("Cannot inject into a unit in " + unit.mode());
+        }
+    }
+
+    private void expireTimedMode(long globalFrame) {
+        if ((unit.mode() == UnitMode.STUNNED || unit.mode() == UnitMode.DISPLACED)
+                && globalFrame >= unit.timedModeUntilGlobalFrame()) {
+            unit.setDisplacementVelocity(Vec2f.ZERO);
+            unit.setTimedModeUntilGlobalFrame(Long.MIN_VALUE);
+            unit.setMode(UnitMode.MOVE);
+        }
+    }
+
+    private static long durationFrames(float seconds) {
+        return Math.max(1L, Math.round(seconds / F32.DT));
+    }
+
     public FrameTrace tick(long globalFrame) {
         validateGlobalFrame(globalFrame);
+        expireTimedMode(globalFrame);
 
         Vec2f entityBefore = unit.entityPosition();
         Vec2f cursorBefore = unit.cursorPosition();
@@ -152,6 +220,14 @@ public final class PathfindingSimulator {
                 unit.setInertiaVelocity(collision.inertiaVelocity());
                 unit.translate(appliedDisplacement);
             }
+        } else if (unit.mode() == UnitMode.DISPLACED && !unit.bound()) {
+            Vec2f velocity = unit.displacementVelocity();
+            requestedDisplacement = velocity.multiply(F32.DT);
+            CollisionResult collision = collisionResolver.resolve(
+                    map, route.movementMode(), unit, requestedDisplacement, velocity, !outsideMap);
+            appliedDisplacement = collision.appliedDisplacement();
+            unit.setInertiaVelocity(collision.inertiaVelocity());
+            unit.translate(appliedDisplacement);
         }
 
         String transition = updateCheckpointAndEndpoint();

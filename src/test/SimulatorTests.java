@@ -45,6 +45,10 @@ public final class SimulatorTests {
         run("confirmed patrol loop rule and loop distance", SimulatorTests::patrolLoopRule);
         run("patrol loop stops checkpoint scanning for the current frame", SimulatorTests::patrolLoopStopsCheckpointScan);
         run("wait checkpoints hold inertia while still refreshing avoidance", SimulatorTests::waitAndAlertBehavior);
+        run("stun holds position for its rounded duration and expires", SimulatorTests::stunHoldsThenExpires);
+        run("displacement pushes against steering and respects collision", SimulatorTests::displacementPushesAndCollides);
+        run("bound units hold position until released", SimulatorTests::boundHoldsPosition);
+        run("combat injections reject invalid input and terminal modes", SimulatorTests::combatInjectionValidation);
         run("all stage-clock wait checkpoint kinds advance", SimulatorTests::stageClockWaitCheckpointKinds);
         run("stage clock derives time from an integer frame counter", SimulatorTests::stageClockDerivesTimeFromFrames);
         run("ignored checkpoints skip side effects and preserve portals", SimulatorTests::ignoredCheckpoints);
@@ -837,6 +841,93 @@ public final class SimulatorTests {
             System.out.printf(Locale.ROOT, "%d\t%08x\t%08x\t%.7f\t%.7f%n", frame + 1,
                     Float.floatToIntBits(position.x()), Float.floatToIntBits(position.y()),
                     position.x(), position.y());
+        }
+    }
+
+    private static void stunHoldsThenExpires() {
+        GridMap map = new GridMap(8, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(7.5f, 0.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        simulator.tick(0L);
+        Vec2f moving = simulator.unit().entityPosition();
+        truth(moving.x() > 0.5f, "setup frame moves the unit");
+
+        simulator.stun(1L, 0.1f);
+        for (long frame = 1L; frame <= 3L; frame++) {
+            FrameTrace trace = simulator.tick(frame);
+            equal(UnitMode.STUNNED, trace.modeAfter(), "stun holds the mode for its duration");
+            equal(moving, simulator.unit().entityPosition(), "stunned unit holds its position exactly");
+        }
+        FrameTrace resumed = simulator.tick(4L);
+        equal(UnitMode.MOVE, resumed.modeAfter(), "stun expires into MOVE");
+        truth(simulator.unit().entityPosition().x() > moving.x(), "unit resumes movement after expiry");
+    }
+
+    private static void displacementPushesAndCollides() {
+        GridMap map = new GridMap(8, 3);
+        Route route = route(new Vec2f(0.5f, 1.5f), new Vec2f(7.5f, 1.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        simulator.tick(0L);
+        Vec2f before = simulator.unit().entityPosition();
+
+        simulator.displace(1L, new Vec2f(0f, -3f), 0.15f);
+        for (long frame = 1L; frame <= 5L; frame++) {
+            FrameTrace trace = simulator.tick(frame);
+            equal(UnitMode.DISPLACED, trace.modeAfter(), "displacement holds the mode for its duration");
+        }
+        Vec2f displaced = simulator.unit().entityPosition();
+        equal(5f * -3f * F32.DT, displaced.y() - before.y(), 0.000001f,
+                "constant velocity moves the unit each displaced frame");
+        FrameTrace resumed = simulator.tick(6L);
+        equal(UnitMode.MOVE, resumed.modeAfter(), "displacement expires into MOVE");
+
+        GridMap walledMap = new GridMap(3, 3);
+        walledMap.setRule(new TileCoord(1, 0), TileRule.impassable());
+        PathfindingSimulator walled = new PathfindingSimulator(walledMap,
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(2.5f, 0.5f), List.of()), UnitConfig.normalGround(1f));
+        walled.displace(0L, new Vec2f(1f, 0f), 0.1f);
+        walled.tick(0L);
+        truth(walled.unit().entityPosition().x() <= 1f, "displacement collision stops the unit at the wall");
+    }
+
+    private static void boundHoldsPosition() {
+        GridMap map = new GridMap(8, 1);
+        PathfindingSimulator simulator = new PathfindingSimulator(map,
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(7.5f, 0.5f), List.of()), UnitConfig.normalGround(1f));
+        simulator.tick(0L);
+        Vec2f moving = simulator.unit().entityPosition();
+        truth(moving.x() > 0.5f, "unbound unit moves");
+
+        simulator.setBound(true);
+        for (long frame = 1L; frame <= 3L; frame++) {
+            simulator.tick(frame);
+            equal(moving, simulator.unit().entityPosition(), "bound unit holds position");
+        }
+        simulator.setBound(false);
+        simulator.tick(4L);
+        truth(simulator.unit().entityPosition().x() > moving.x(), "released unit resumes movement");
+    }
+
+    private static void combatInjectionValidation() {
+        GridMap map = new GridMap(4, 1);
+        PathfindingSimulator simulator = new PathfindingSimulator(map,
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of()), UnitConfig.normalGround(1f));
+        expectIllegalArgument(() -> simulator.stun(0L, -0.1f), "non-negative");
+        expectIllegalArgument(() -> simulator.displace(0L, new Vec2f(Float.NaN, 0f), 0.1f), "finite");
+        simulator.tick(0L);
+        expectIllegalArgument(() -> simulator.stun(2L, 0.1f), "next frame");
+
+        GridMap blockedMap = new GridMap(3, 1);
+        blockedMap.setRule(new TileCoord(1, 0), TileRule.impassable());
+        PathfindingSimulator blocked = new PathfindingSimulator(blockedMap,
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(2.5f, 0.5f), List.of()), UnitConfig.normalGround(1f));
+        blocked.tick(0L);
+        try {
+            blocked.stun(1L, 0.1f);
+            throw new AssertionError("Stun into a blocked unit was accepted");
+        } catch (IllegalStateException expected) {
+            truth(expected.getMessage() != null && expected.getMessage().contains("BLOCKED"),
+                    "blocked injection error is explicit");
         }
     }
 
