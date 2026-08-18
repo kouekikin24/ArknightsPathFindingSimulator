@@ -49,6 +49,9 @@ public final class SimulatorTests {
         run("displacement pushes against steering and respects collision", SimulatorTests::displacementPushesAndCollides);
         run("bound units hold position until released", SimulatorTests::boundHoldsPosition);
         run("combat injections reject invalid input and terminal modes", SimulatorTests::combatInjectionValidation);
+        run("stage shares path maps and the global avoidance phase", SimulatorTests::stageSharesCacheAndPhase);
+        run("stage units are independent of their companions", SimulatorTests::stageUnitsAreIndependent);
+        run("stage validates input and frame sequence", SimulatorTests::stageValidation);
         run("all stage-clock wait checkpoint kinds advance", SimulatorTests::stageClockWaitCheckpointKinds);
         run("stage clock derives time from an integer frame counter", SimulatorTests::stageClockDerivesTimeFromFrames);
         run("ignored checkpoints skip side effects and preserve portals", SimulatorTests::ignoredCheckpoints);
@@ -929,6 +932,58 @@ public final class SimulatorTests {
             truth(expected.getMessage() != null && expected.getMessage().contains("BLOCKED"),
                     "blocked injection error is explicit");
         }
+    }
+
+    private static void stageSharesCacheAndPhase() {
+        GridMap map = new GridMap(8, 1);
+        Route sharedRoute = route(new Vec2f(0.5f, 0.5f), new Vec2f(7.5f, 0.5f), List.of());
+        PathMapCache cache = new PathMapCache();
+        Stage stage = new Stage(map, List.of(
+                new Stage.StageUnit(sharedRoute, UnitConfig.normalGround(1f)),
+                new Stage.StageUnit(sharedRoute, UnitConfig.normalGround(1f))), cache, 100);
+        List<FrameTrace> traces = stage.tick(6L);
+        equal(1, cache.entryCount(), "identical targets share one cached path map");
+        truth(traces.get(0).avoidanceRecomputed(), "first unit refreshes on the shared phase frame");
+        equal(traces.get(0).avoidanceRecomputed(), traces.get(1).avoidanceRecomputed(),
+                "all stage units share the caller's global phase");
+        equal(1, stage.simulator(1).frame(), "each unit keeps its own audit frame counter");
+
+        PathMapCache separate = new PathMapCache();
+        Stage mixed = new Stage(map, List.of(
+                new Stage.StageUnit(sharedRoute, UnitConfig.normalGround(1f)),
+                new Stage.StageUnit(route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of()),
+                        UnitConfig.normalGround(1f))), separate, 100);
+        mixed.tick(6L);
+        equal(2, separate.entryCount(), "different targets cache one path map each");
+    }
+
+    private static void stageUnitsAreIndependent() {
+        GridMap map = new GridMap(8, 1);
+        Route solo = route(new Vec2f(0.5f, 0.5f), new Vec2f(7.5f, 0.5f), List.of());
+        Route other = route(new Vec2f(1.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of(
+                Checkpoint.move(new Vec2f(2.5f, 0.5f))));
+        Stage alone = new Stage(map, List.of(new Stage.StageUnit(solo, UnitConfig.normalGround(1f))));
+        Stage crowded = new Stage(map, List.of(
+                new Stage.StageUnit(solo, UnitConfig.normalGround(1f)),
+                new Stage.StageUnit(other, UnitConfig.normalGround(1f))));
+        for (long frame = 0L; frame < 90L; frame++) {
+            Vec2f soloPosition = alone.tick(frame).get(0).entityAfter();
+            Vec2f crowdedPosition = crowded.tick(frame).get(0).entityAfter();
+            truth(Float.floatToIntBits(soloPosition.x()) == Float.floatToIntBits(crowdedPosition.x())
+                            && Float.floatToIntBits(soloPosition.y()) == Float.floatToIntBits(crowdedPosition.y()),
+                    "unit trajectory is bit-identical with companions at frame " + frame);
+        }
+    }
+
+    private static void stageValidation() {
+        GridMap map = new GridMap(4, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of());
+        expectIllegalArgument(() -> new Stage(map, List.of()), "at least one");
+        expectNullPointer(() -> new Stage.StageUnit(null, UnitConfig.normalGround(1f)), "Route is required");
+        Stage stage = new Stage(map, List.of(new Stage.StageUnit(route, UnitConfig.normalGround(1f))));
+        expectIllegalArgument(() -> stage.tick(-1L), "non-negative");
+        stage.tick(0L);
+        expectIllegalArgument(() -> stage.tick(2L), "consecutive");
     }
 
     private static Route route(Vec2f spawn, Vec2f endpoint, List<Checkpoint> checkpoints) {
