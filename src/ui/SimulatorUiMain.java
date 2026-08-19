@@ -56,6 +56,7 @@ public final class SimulatorUiMain {
         verifyScenarioRoundTrip();
         verifyCheckpointEditing();
         verifyCombatStateInjection();
+        verifyInjectionBelowFrontier();
         verifyMultiUnit();
         System.out.println("UI session verification passed.");
     }
@@ -463,6 +464,72 @@ public final class SimulatorUiMain {
             if (expected.getMessage() == null || !expected.getMessage().contains("终态")) {
                 throw new IllegalStateException("Terminal injection error was not reported");
             }
+        }
+    }
+
+    private static void verifyInjectionBelowFrontier() {
+        SimulationSession session = new SimulationSession();
+        for (int frame = 0; frame < 10; frame++) {
+            session.tickFrame();
+        }
+        UiSnapshot originalSix = session.generatedStateAtFrame(6).units().get(0);
+        if (!"移动".equals(originalSix.unitMode())) {
+            throw new IllegalStateException("Demo unit was expected to be moving at frame 6");
+        }
+        session.seekFrame(2);
+        session.applyStun(1f);
+        if (session.generatedFrameCount() != 3) {
+            throw new IllegalStateException("Injection below the frontier did not drop the invalidated tail");
+        }
+        while (session.canTick() && session.generatedFrameCount() <= 11) {
+            session.tickFrame();
+        }
+        UiSnapshot branchedSix = session.seekFrame(6).units().get(0);
+        if (!"眩晕".equals(branchedSix.unitMode())
+                || branchedSix.entityPosition().equals(originalSix.entityPosition())) {
+            throw new IllegalStateException("Seek after a below-frontier injection returned the stale run");
+        }
+        String csv = session.exportTraceCsv();
+        boolean branchedRow = false;
+        for (String row : csv.split("\n")) {
+            if (row.startsWith("0,6,") && row.contains("眩晕")) {
+                branchedRow = true;
+            }
+        }
+        if (!branchedRow) {
+            throw new IllegalStateException("CSV export kept a stale pre-injection frame");
+        }
+        List<UiPoint> branched = new java.util.ArrayList<>();
+        for (int frame = 0; frame <= 10; frame++) {
+            branched.add(session.generatedStateAtFrame(frame).units().get(0).entityPosition());
+        }
+        session.seekFrame(0);
+        for (int frame = 0; frame <= 10; frame++) {
+            assertFloatBits(branched.get(frame),
+                    session.seekFrame(frame).units().get(0).entityPosition(),
+                    "branched injection replay frame " + frame);
+        }
+
+        SimulationSession terminal = new SimulationSession();
+        terminal.newScenario(4, 3);
+        terminal.setTerrain(new UiCell(1, 0), UiTerrain.WALL);
+        terminal.setTerrain(new UiCell(1, 1), UiTerrain.WALL);
+        terminal.setTerrain(new UiCell(1, 2), UiTerrain.WALL);
+        terminal.tickFrame();
+        int oldTerminal = terminal.terminalFrame();
+        if (oldTerminal < 0) {
+            throw new IllegalStateException("Walled unit was expected to reach a terminal frame");
+        }
+        terminal.seekFrame(0);
+        terminal.applyStun(1f);
+        if (terminal.terminalFrame() >= 0) {
+            throw new IllegalStateException("Stale terminal frame survived a below-frontier injection");
+        }
+        while (terminal.canTick() && terminal.generatedFrameCount() <= 40) {
+            terminal.tickFrame();
+        }
+        if (!terminal.isTerminal() || terminal.terminalFrame() <= oldTerminal) {
+            throw new IllegalStateException("Stale terminal frame still blocked the re-derived run");
         }
     }
 
