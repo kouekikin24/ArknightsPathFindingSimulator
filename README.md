@@ -149,6 +149,8 @@ run-ui.cmd --verify
 powershell -ExecutionPolicy Bypass -File .\run-ui.ps1 --verify
 ```
 
+`run-smoke.cmd` 另有一个桌面冒烟测试：打开真实窗口，用 `java.awt.Robot` 自动画墙、撤销/重做、播放、定位、注入并逐步截图（`smoke-shots/`）。它会接管鼠标键盘约 20 秒，运行期间不要操作电脑；无桌面会话（如 CI）无法运行。
+
 也可以检查提交前的空白错误：
 
 ```powershell
