@@ -43,6 +43,7 @@ import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
@@ -110,10 +111,10 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 3600.0d, 0.1d));
     private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 100, 1));
     private final JButton addCheckpointButton = new JButton("添加");
-    private final JSpinner stunSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d));
-    private final JSpinner pushXSpinner = new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d));
-    private final JSpinner pushYSpinner = new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d));
-    private final JSpinner pushSecondsSpinner = new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, 10.0d, 0.1d));
+    private final JSpinner stunSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d)));
+    private final JSpinner pushXSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));
+    private final JSpinner pushYSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));
+    private final JSpinner pushSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, 10.0d, 0.1d)));
     private final JToggleButton bindToggle = new JToggleButton("束缚");
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
     private final JList<String> checkpointList = new JList<>(checkpointModel);
@@ -255,6 +256,9 @@ public final class SimulatorWorkbench extends JFrame {
         timelineSlider.setFocusable(true);
         timelineSlider.setToolTipText("时间轴单位为帧");
         panel.add(timelineSlider, BorderLayout.CENTER);
+        footerStatus.setForeground(new Color(94, 111, 101));
+        footerStatus.setBorder(new EmptyBorder(2, 6, 2, 6));
+        panel.add(footerStatus, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -277,8 +281,8 @@ public final class SimulatorWorkbench extends JFrame {
         content.add(createCheckpointSection());
         JScrollPane scroll = new JScrollPane(content, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
-        scroll.setPreferredSize(new Dimension(260, 0));
-        scroll.setMinimumSize(new Dimension(218, 0));
+        scroll.setPreferredSize(new Dimension(280, 0));
+        scroll.setMinimumSize(new Dimension(240, 0));
         scroll.setBorder(BorderFactory.createLineBorder(BORDER));
         scroll.getViewport().setBackground(WINDOW_BACKGROUND);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
@@ -548,7 +552,7 @@ public final class SimulatorWorkbench extends JFrame {
         checkpointList.setVisibleRowCount(5);
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
 
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        JPanel actions = new JPanel(new GridLayout(2, 3, 4, 4));
         actions.setOpaque(false);
         addCheckpointButton.setToolTipText("加入列表（选中项之前插入，未选中则加到末尾）");
         addCheckpointButton.addActionListener(event -> addCheckpointFromPanel());
@@ -817,8 +821,10 @@ public final class SimulatorWorkbench extends JFrame {
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control Y"), this::redoEdit);
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control shift Z"), this::redoEdit);
         shortcut(keys, actions, "toggle-playback", KeyStroke.getKeyStroke("SPACE"), playButton::doClick);
-        shortcut(keys, actions, "step-frame", KeyStroke.getKeyStroke('N'), this::stepOneFrame);
-        shortcut(keys, actions, "reset-run", KeyStroke.getKeyStroke('R'), this::resetRun);
+        // Pressed-form strokes: the char overload would create KEY_TYPED bindings
+        // that only match the exact typed case ('N' vs the user's 'n').
+        shortcut(keys, actions, "step-frame", KeyStroke.getKeyStroke(KeyEvent.VK_N, 0), this::stepOneFrame);
+        shortcut(keys, actions, "reset-run", KeyStroke.getKeyStroke(KeyEvent.VK_R, 0), this::resetRun);
     }
 
     private static void shortcut(InputMap keys, ActionMap actions, String name,
@@ -1279,6 +1285,14 @@ public final class SimulatorWorkbench extends JFrame {
 
     private static int intValue(JSpinner spinner) {
         return ((Number) spinner.getValue()).intValue();
+    }
+
+    /** Keeps combat-row spinners narrow enough that the sidebar never clips horizontally. */
+    private static JSpinner narrowSpinner(JSpinner spinner) {
+        if (spinner.getEditor() instanceof JSpinner.DefaultEditor editor) {
+            editor.getTextField().setColumns(2);
+        }
+        return spinner;
     }
 
     private enum EditorTool { OPEN, BOX, PIT, WALL, SPAWN, ENDPOINT, CHECKPOINT, BROWSE }
