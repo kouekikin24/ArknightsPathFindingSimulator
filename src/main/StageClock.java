@@ -53,6 +53,10 @@ public final class StageClock {
     }
 
     private static float elapsedSeconds(long frames) {
-        return frames * F32.DT;
+        // Widen before multiplying: frames * F32.DT would promote the long to
+        // float first, silently quantizing every frame count past 2^24. The
+        // double product stays integral-exact for any feasible frame count and
+        // narrows to the same float32 tick grid deterministically.
+        return (float) frames * F32.DT;
     }
 }

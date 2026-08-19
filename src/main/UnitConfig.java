@@ -21,7 +21,7 @@ public record UnitConfig(
                 || maxSteeringForce < 0f || halfBodyWidth < 0f) {
             throw new IllegalArgumentException("Movement scalars cannot be negative");
         }
-        if (!finite(spawnEntityOffset) || !finite(footOffset)) {
+        if (!Vec2f.isFinite(spawnEntityOffset) || !Vec2f.isFinite(footOffset)) {
             throw new IllegalArgumentException("Movement offsets must be finite");
         }
     }
@@ -46,9 +46,5 @@ public record UnitConfig(
 
     public float theoreticalSpeed() {
         return F32.max(attributeSpeed, 0.1f) * moveMultiplier;
-    }
-
-    private static boolean finite(Vec2f value) {
-        return value != null && Float.isFinite(value.x()) && Float.isFinite(value.y());
     }
 }

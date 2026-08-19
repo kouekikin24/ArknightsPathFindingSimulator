@@ -10,14 +10,16 @@ public final class NextNodeSmoother {
 
     public static void smooth(GridMap map, MovementMode mode, int[] next, boolean allowDiagonalMove) {
         LinkTester tester = (source, candidate) -> ModifiedBresenham.canLink(map, mode, source, candidate);
-        if (allowDiagonalMove) {
-            smoothDiagonal(map, mode, next, tester);
-        } else {
-            smoothOrthogonal(map, mode, next, tester);
-        }
+        smoothInPlace(map, mode, next, tester, allowDiagonalMove);
     }
 
-    static void smoothDiagonal(GridMap map, MovementMode mode, int[] next, LinkTester tester) {
+    /**
+     * Rewrites next[source] in place, bottom row first, so earlier rewrites in
+     * the same pass chain onto already-smoothed successors. When diagonal links
+     * are disallowed, only same-row/same-column shortcuts are taken.
+     */
+    static void smoothInPlace(GridMap map, MovementMode mode, int[] next, LinkTester tester,
+                              boolean allowDiagonal) {
         for (int y = map.height() - 1; y >= 0; y--) {
             for (int x = 0; x < map.width(); x++) {
                 TileCoord source = new TileCoord(x, y);
@@ -36,6 +38,9 @@ public final class NextNodeSmoother {
                         break;
                     }
                     TileCoord candidate = map.coordinate(candidateIndex);
+                    if (!allowDiagonal && source.x() != candidate.x() && source.y() != candidate.y()) {
+                        break;
+                    }
                     if (!tester.canLink(source, candidate)) {
                         break;
                     }
@@ -45,31 +50,7 @@ public final class NextNodeSmoother {
         }
     }
 
-    private static void smoothOrthogonal(GridMap map, MovementMode mode, int[] next, LinkTester tester) {
-        for (int y = map.height() - 1; y >= 0; y--) {
-            for (int x = 0; x < map.width(); x++) {
-                TileCoord source = new TileCoord(x, y);
-                int sourceIndex = map.index(source);
-                if (!map.passable(source, mode) || next[sourceIndex] < 0) {
-                    continue;
-                }
-                while (true) {
-                    int directIndex = next[sourceIndex];
-                    if (directIndex < 0 || directIndex == sourceIndex) {
-                        break;
-                    }
-                    int candidateIndex = next[directIndex];
-                    if (candidateIndex < 0 || candidateIndex == directIndex || candidateIndex == sourceIndex) {
-                        break;
-                    }
-                    TileCoord candidate = map.coordinate(candidateIndex);
-                    if ((source.x() != candidate.x() && source.y() != candidate.y())
-                            || !tester.canLink(source, candidate)) {
-                        break;
-                    }
-                    next[sourceIndex] = candidateIndex;
-                }
-            }
-        }
+    static void smoothDiagonal(GridMap map, MovementMode mode, int[] next, LinkTester tester) {
+        smoothInPlace(map, mode, next, tester, true);
     }
 }

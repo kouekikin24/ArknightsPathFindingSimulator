@@ -61,6 +61,15 @@ public final class SimulatorTests {
         run("endpoint and checkpoint radii share one constant", SimulatorTests::sharedCompletionRadius);
         run("identical scenarios produce bit-identical trajectories", SimulatorTests::deterministicBaseline);
         run("parameter validation rejects invalid input", SimulatorTests::parameterValidation);
+        run("avoidance pushes away from blocked neighbors within the margin", SimulatorTests::avoidanceNeighborInfluence);
+        run("tile-center visit policy detours through every entered tile center", SimulatorTests::visitEveryTileCenterSteering);
+        run("route distances continue from the last portal and past a terminal portal", SimulatorTests::portalRouteDistances);
+        run("a move checkpoint after a portal completes from the relocated position", SimulatorTests::postPortalCompletionUsesRelocatedPosition);
+        run("vanished and completed units reject combat injections", SimulatorTests::injectionRejectsVanishedAndCompleted);
+        run("setPlayTime rebases the clock at any frame without a jump", SimulatorTests::setPlayTimeAtNonzeroFrame);
+        run("a capacity-one trace ring still delivers every frame to the listener", SimulatorTests::traceCapacityOne);
+        run("a huge stun duration clamps instead of overflowing the expiry frame", SimulatorTests::hugeStunDurationClamps);
+        run("map dimensions stay within the allocation bound", SimulatorTests::mapDimensionBounds);
         System.out.println("Passed " + passed + " simulator tests.");
     }
 
@@ -986,8 +995,211 @@ public final class SimulatorTests {
         expectIllegalArgument(() -> stage.tick(2L), "consecutive");
     }
 
-    private static Route route(Vec2f spawn, Vec2f endpoint, List<Checkpoint> checkpoints) {
-        return new Route(spawn, endpoint, checkpoints, MovementMode.GROUND, true, true, false);
+    private static void avoidanceNeighborInfluence() {
+        AvoidanceCalculator calculator = new AvoidanceCalculator();
+        UnitConfig config = UnitConfig.normalGround(1f);
+
+        // UP wall at (1, 0), cursor at (1.2, 1.2): the foot's Y is exactly 1.0,
+        // so the up face sits 0.8 away, inside the 0.25 + 0.2 influence band.
+        GridMap upWall = new GridMap(4, 4);
+        upWall.setRule(new TileCoord(1, 0), TileRule.impassable());
+        Vec2f up = avoidanceAt(calculator, config, upWall, 1.2f, 1.2f, Vec2f.ZERO);
+        equal(new Vec2f(0f, 1f), up, "up wall inside the margin pushes straight down");
+
+        // Both the UP and LEFT neighbors blocked: each diagonal neighbor inside
+        // the band contributes its averaged push, and the sum is normalized.
+        GridMap corner = new GridMap(4, 4);
+        corner.setRule(new TileCoord(1, 0), TileRule.impassable());
+        corner.setRule(new TileCoord(0, 1), TileRule.impassable());
+        Vec2f both = avoidanceAt(calculator, config, corner, 1.2f, 1.2f, Vec2f.ZERO);
+        float diagonal = F32.sqrt(0.5f);
+        equal(diagonal, both.x(), 0.000001f, "corner walls average into a diagonal push");
+        equal(diagonal, both.y(), 0.000001f, "corner push is symmetric");
+        equal(1f, both.length(), 0.000001f, "the 8-neighbor sum is normalized");
+        Vec2f projected = avoidanceAt(calculator, config, corner, 1.2f, 1.2f, new Vec2f(1f, 0f));
+        equal(0f, projected.x(), 0.000001f, "projection strips the given-direction component");
+        equal(diagonal, projected.y(), 0.000001f, "the perpendicular avoidance component survives");
+
+        // Diagonal neighbor alone: the averaged branch fires without any cardinal help.
+        GridMap diagonalOnly = new GridMap(4, 4);
+        diagonalOnly.setRule(new TileCoord(0, 0), TileRule.impassable());
+        Vec2f diag = avoidanceAt(calculator, config, diagonalOnly, 1.2f, 1.2f, Vec2f.ZERO);
+        equal(diagonal, diag.x(), 0.000001f, "a lone diagonal wall still pushes diagonally");
+        equal(diagonal, diag.y(), 0.000001f, "lone diagonal push is symmetric");
+
+        // Below the margin: from tile (0, 0) the wall's nearest face sits 1.25
+        // from the foot, beyond 0.25 + 0.2, so it contributes nothing.
+        Vec2f none = avoidanceAt(calculator, config, upWall, 0.5f, 0.5f, Vec2f.ZERO);
+        equal(Vec2f.ZERO, none, "obstacle below the influence margin contributes nothing");
+    }
+
+    private static Vec2f avoidanceAt(AvoidanceCalculator calculator, UnitConfig config,
+                                     GridMap map, float cursorX, float cursorY, Vec2f given) {
+        Route spawn = route(new Vec2f(cursorX, cursorY), new Vec2f(3.5f, 3.5f), List.of());
+        return calculator.calculate(map, MovementMode.GROUND, config, new UnitState(spawn, config), given);
+    }
+
+    private static void visitEveryTileCenterSteering() {
+        GridMap map = new GridMap(5, 5);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(4.5f, 4.5f), List.of());
+        UnitConfig visiting = new UnitConfig(1f, 0.5f, 8f, 10f, Vec2f.ZERO, new Vec2f(0f, -0.2f), 0.2f,
+                true, false, false);
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, visiting);
+        TileCoord previousTile = TileCoord.fromPosition(simulator.unit().cursorPosition());
+        int centerDetours = 0;
+        for (long globalFrame = 0L; globalFrame < 400L && simulator.unit().mode() == UnitMode.MOVE;
+             globalFrame++) {
+            FrameTrace trace = simulator.tick(globalFrame);
+            if (trace.cursorTile().equals(previousTile)) {
+                continue;
+            }
+            previousTile = trace.cursorTile();
+            if (trace.target() == null || !trace.target().equals(previousTile.center())) {
+                continue;
+            }
+            centerDetours++;
+        }
+        truth(centerDetours >= 3, "every newly entered tile detours to its center, saw " + centerDetours);
+        equal(UnitMode.COMPLETED, simulator.unit().mode(), "the detouring unit still completes the route");
+
+        UnitConfig nodeCenter = new UnitConfig(1f, 0.5f, 8f, 10f, Vec2f.ZERO, new Vec2f(0f, -0.2f), 0.2f,
+                false, true, false);
+        PathfindingSimulator control = new PathfindingSimulator(map, route, nodeCenter);
+        TileCoord controlTile = TileCoord.fromPosition(control.unit().cursorPosition());
+        for (long globalFrame = 0L; globalFrame < 400L && control.unit().mode() == UnitMode.MOVE;
+             globalFrame++) {
+            FrameTrace trace = control.tick(globalFrame);
+            if (!trace.cursorTile().equals(controlTile)) {
+                controlTile = trace.cursorTile();
+                equal(route.endpoint(), trace.target(),
+                        "node-center policy skips already-visited next nodes and keeps the endpoint");
+            }
+        }
+    }
+
+    private static void portalRouteDistances() {
+        GridMap map = new GridMap(7, 1);
+        TileCoord start = new TileCoord(0, 0);
+
+        Route twoPortals = route(new Vec2f(0.5f, 0.5f), new Vec2f(0.5f, 0.5f), List.of(
+                Checkpoint.move(new Vec2f(2.5f, 0.5f)),
+                Checkpoint.disappear(), Checkpoint.appearAt(new Vec2f(4.5f, 0.5f)),
+                Checkpoint.disappear(), Checkpoint.appearAt(new Vec2f(6.5f, 0.5f))));
+        PathfindingSimulator chained = new PathfindingSimulator(map, twoPortals, UnitConfig.normalGround(1f));
+        equal(8f, chained.remainingRouteDistanceForCheckpoint(0, start), 0.000001f,
+                "goal zero continues from the last portal between it and the endpoint");
+
+        Route terminalPortal = route(new Vec2f(0.5f, 0.5f), new Vec2f(0.5f, 0.5f), List.of(
+                Checkpoint.move(new Vec2f(2.5f, 0.5f)),
+                Checkpoint.disappear(), Checkpoint.appearAt(new Vec2f(4.5f, 0.5f))));
+        PathfindingSimulator terminal = new PathfindingSimulator(map, terminalPortal, UnitConfig.normalGround(1f));
+        equal(6f, terminal.remainingRouteDistanceForCheckpoint(0, start), 0.000001f,
+                "a portal as the final checkpoint still originates the endpoint continuation");
+    }
+
+    private static void postPortalCompletionUsesRelocatedPosition() {
+        GridMap map = new GridMap(8, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(6.5f, 0.5f), List.of(
+                Checkpoint.move(new Vec2f(1.5f, 0.5f)),
+                Checkpoint.disappear(),
+                Checkpoint.appearAt(new Vec2f(4.5f, 0.5f)),
+                Checkpoint.move(new Vec2f(5.5f, 0.5f))));
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        for (long globalFrame = 0L; globalFrame < 500L; globalFrame++) {
+            FrameTrace trace = simulator.tick(globalFrame);
+            if (trace.transition().contains("complete APPEAR_AT_POS")) {
+                break;
+            }
+        }
+        equal(new Vec2f(4.5f, 0.5f), simulator.unit().cursorPosition(), "portal relocated the cursor");
+        FrameTrace completion = null;
+        for (long globalFrame = simulator.lastGlobalFrame() + 1L; globalFrame < 600L; globalFrame++) {
+            FrameTrace trace = simulator.tick(globalFrame);
+            if (trace.transition().contains("complete MOVE")) {
+                completion = trace;
+                break;
+            }
+        }
+        truth(completion != null, "the post-portal MOVE checkpoint completes");
+        truth(completion.cursorAfter().x() > 4f,
+                "completion is measured from the relocated position, not the pre-portal one");
+    }
+
+    private static void injectionRejectsVanishedAndCompleted() {
+        PathfindingSimulator vanished = new PathfindingSimulator(new GridMap(4, 1),
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of(
+                        Checkpoint.disappear(), Checkpoint.waitForSeconds(100f),
+                        Checkpoint.appearAt(new Vec2f(2.5f, 0.5f)))),
+                UnitConfig.normalGround(1f));
+        vanished.tick(0L);
+        equal(UnitMode.VANISHED, vanished.unit().mode(), "unit vanished on frame zero");
+        expectIllegalState(() -> vanished.stun(1L, 1f), "Cannot inject");
+        expectIllegalState(() -> vanished.displace(1L, new Vec2f(1f, 0f), 1f), "Cannot inject");
+
+        PathfindingSimulator completed = new PathfindingSimulator(new GridMap(4, 1),
+                route(new Vec2f(0.5f, 0.5f), new Vec2f(0.5f, 0.5f), List.of()), UnitConfig.normalGround(1f));
+        completed.tick(0L);
+        equal(UnitMode.COMPLETED, completed.unit().mode(), "unit spawned on its endpoint completes immediately");
+        expectIllegalState(() -> completed.stun(1L, 1f), "Cannot inject");
+        expectIllegalState(() -> completed.displace(1L, new Vec2f(1f, 0f), 1f), "Cannot inject");
+    }
+
+    private static void setPlayTimeAtNonzeroFrame() {
+        StageClock clock = new StageClock();
+        for (int index = 0; index < 100; index++) {
+            clock.tick();
+        }
+        clock.setPlayTime(10f);
+        equal(10f, clock.playTime(), 0.000001f, "rebased clock reads exactly the assigned time");
+        clock.tick();
+        equal(10f + F32.DT, clock.playTime(), 0.000001f, "the next tick continues from the new bias");
+    }
+
+    private static void traceCapacityOne() {
+        GridMap map = new GridMap(4, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of());
+        List<FrameTrace> heard = new ArrayList<>();
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f), 1, heard::add);
+        for (long globalFrame = 0L; globalFrame < 5L; globalFrame++) {
+            simulator.tick(globalFrame);
+        }
+        equal(5, heard.size(), "the listener receives every frame even at capacity one");
+        equal(1, simulator.trace().size(), "the ring retains only the newest frame");
+        equal(4, simulator.trace().getFirst().frame(), "the retained frame is the newest one");
+        equal(4L, simulator.droppedTraceFrames(), "every older frame was evicted");
+    }
+
+    private static void hugeStunDurationClamps() {
+        GridMap map = new GridMap(4, 1);
+        Route route = route(new Vec2f(0.5f, 0.5f), new Vec2f(3.5f, 0.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        simulator.tick(0L);
+        simulator.stun(1L, 65_000f);
+        truth(simulator.unit().timedModeUntilGlobalFrame() > 0L,
+                "the clamped expiry frame stays positive instead of wrapping negative");
+        truth(simulator.unit().timedModeUntilGlobalFrame() <= Integer.MAX_VALUE,
+                "the expiry frame never outlives the local frame counter's range");
+    }
+
+    private static void mapDimensionBounds() {
+        expectIllegalArgument(() -> new GridMap(0, 4), "positive");
+        expectIllegalArgument(() -> new GridMap(GridMap.MAXIMUM_DIMENSION + 1, 4), "at most");
+        GridMap largest = new GridMap(GridMap.MAXIMUM_DIMENSION, 2);
+        equal(GridMap.MAXIMUM_DIMENSION, largest.width(), "the bound itself is accepted");
+    }
+
+    private static void expectIllegalState(Runnable action, String messagePart) {
+        try {
+            action.run();
+        } catch (IllegalStateException error) {
+            truth(error.getMessage() != null && error.getMessage().contains(messagePart),
+                    "exception message should contain '" + messagePart + "': " + error.getMessage());
+            return;
+        }
+        throw new AssertionError("Expected IllegalStateException containing '" + messagePart + "'");
+    }
+
+    private static Route route(Vec2f spawn, Vec2f endpoint, List<Checkpoint> checkpoints) {        return new Route(spawn, endpoint, checkpoints, MovementMode.GROUND, true, true, false);
     }
 
     private static void run(String name, Runnable test) {

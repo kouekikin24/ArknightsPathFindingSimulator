@@ -69,8 +69,19 @@ public final class UnitState {
         return previousDistinctCursorTile;
     }
 
+    /**
+     * Center-visit history backing the visit-every-* policies. Exposed directly
+     * (not copied) for the simulator's contains checks; only add/contains/clear
+     * semantics are supported, and callers must not iterate it (HashSet order
+     * is unspecified) or retain it.
+     */
     public Set<TileCoord> passedTileCenters() {
         return passedTileCenters;
+    }
+
+    /** Records a tile center as visited by the current route goal. */
+    public void markVisitedTileCenter(TileCoord tile) {
+        passedTileCenters.add(tile);
     }
 
     public int alertsShown() {

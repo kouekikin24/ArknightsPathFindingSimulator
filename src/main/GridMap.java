@@ -3,6 +3,12 @@ import java.util.Objects;
 
 /** Mutable, versioned map. Mutation invalidates cached path maps. */
 public final class GridMap {
+    /**
+     * Largest supported side length; width * height is int arithmetic, so
+     * unbounded dimensions could overflow into NegativeArraySizeException.
+     */
+    public static final int MAXIMUM_DIMENSION = 512;
+
     private final int width;
     private final int height;
     private final TileRule[] rules;
@@ -11,6 +17,9 @@ public final class GridMap {
     public GridMap(int width, int height) {
         if (width <= 0 || height <= 0) {
             throw new IllegalArgumentException("Map dimensions must be positive");
+        }
+        if (width > MAXIMUM_DIMENSION || height > MAXIMUM_DIMENSION) {
+            throw new IllegalArgumentException("Map dimensions must be at most " + MAXIMUM_DIMENSION);
         }
         this.width = width;
         this.height = height;

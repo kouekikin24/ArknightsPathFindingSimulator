@@ -33,13 +33,7 @@ public final class Stage {
 
     /** Ticks every unit with the shared global frame and returns one trace per unit in stage order. */
     public List<FrameTrace> tick(long globalFrame) {
-        if (globalFrame < 0L) {
-            throw new IllegalArgumentException("Global frame must be non-negative");
-        }
-        if (lastGlobalFrame != Long.MIN_VALUE && globalFrame != lastGlobalFrame + 1L) {
-            throw new IllegalArgumentException("Global frames must be consecutive: expected "
-                    + (lastGlobalFrame + 1L) + ", got " + globalFrame);
-        }
+        GlobalFrameSequencer.requireNext(lastGlobalFrame, globalFrame);
         lastGlobalFrame = globalFrame;
         List<FrameTrace> traces = new ArrayList<>(simulators.size());
         for (PathfindingSimulator simulator : simulators) {

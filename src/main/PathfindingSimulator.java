@@ -12,6 +12,8 @@ import java.util.function.Consumer;
 public final class PathfindingSimulator {
     public static final int DEFAULT_TRACE_CAPACITY = 10_000;
     public static final float ENDPOINT_RADIUS = Checkpoint.DEFAULT_MOVE_RADIUS;
+    /** Arrival radius used by the visitEveryNodeStably policy. */
+    private static final float STABLE_NODE_RADIUS = 0.25f;
 
     private final GridMap map;
     private final Route route;
@@ -131,7 +133,7 @@ public final class PathfindingSimulator {
         requireDuration(seconds);
         requireInjectionEligible();
         unit.setMode(UnitMode.STUNNED);
-        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(globalFrame, seconds));
     }
 
     /**
@@ -148,7 +150,7 @@ public final class PathfindingSimulator {
         requireInjectionEligible();
         unit.setMode(UnitMode.DISPLACED);
         unit.setDisplacementVelocity(velocity);
-        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(globalFrame, seconds));
     }
 
     /** Binds or releases the unit; a bound unit skips integration in every moving mode. */
@@ -185,8 +187,12 @@ public final class PathfindingSimulator {
         }
     }
 
-    private static long durationFrames(float seconds) {
-        return Math.max(1L, Math.round(seconds / F32.DT));
+    private static long durationFrames(long globalFrame, float seconds) {
+        // The rounded frame count is capped at the local frame counter's range
+        // so the simulator can always tick up to the expiry frame; capping at
+        // Long.MAX_VALUE would demand frames the counter can never reach.
+        return Math.min(Math.max(1L, Math.round(seconds / F32.DT)),
+                (long) Integer.MAX_VALUE - globalFrame);
     }
 
     public FrameTrace tick(long globalFrame) {
@@ -264,13 +270,7 @@ public final class PathfindingSimulator {
     }
 
     private void validateGlobalFrame(long globalFrame) {
-        if (globalFrame < 0L) {
-            throw new IllegalArgumentException("Global frame must be non-negative");
-        }
-        if (lastGlobalFrame != Long.MIN_VALUE && globalFrame != lastGlobalFrame + 1L) {
-            throw new IllegalArgumentException("Global frames must be consecutive: expected "
-                    + (lastGlobalFrame + 1L) + ", got " + globalFrame);
-        }
+        GlobalFrameSequencer.requireNext(lastGlobalFrame, globalFrame);
         if (frame == Integer.MAX_VALUE) {
             throw new IllegalStateException("Local audit frame counter would overflow");
         }
@@ -365,9 +365,9 @@ public final class PathfindingSimulator {
             return defaultTarget;
         }
 
-        float radius = stableNode ? 0.25f : Checkpoint.DEFAULT_MOVE_RADIUS;
+        float radius = stableNode ? STABLE_NODE_RADIUS : ENDPOINT_RADIUS;
         if (unit.cursorPosition().distanceTo(currentTile.center()) <= radius) {
-            unit.passedTileCenters().add(currentTile);
+            unit.markVisitedTileCenter(currentTile);
         }
 
         if (tileCenter && !unit.passedTileCenters().contains(currentTile)) {

@@ -7,6 +7,11 @@ public record Vec2f(float x, float y) {
         return new Vec2f(x + other.x, y + other.y);
     }
 
+    /** Non-null with both components finite; the shared record-validation predicate. */
+    public static boolean isFinite(Vec2f value) {
+        return value != null && Float.isFinite(value.x()) && Float.isFinite(value.y());
+    }
+
     public Vec2f subtract(Vec2f other) {
         return new Vec2f(x - other.x, y - other.y);
     }

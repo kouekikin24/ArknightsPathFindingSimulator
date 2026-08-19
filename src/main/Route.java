@@ -12,7 +12,7 @@ public record Route(
         boolean ignoreAllButMoveCp) {
 
     public Route {
-        if (!finite(spawnCursorPosition) || !finite(endpoint) || movementMode == null) {
+        if (!Vec2f.isFinite(spawnCursorPosition) || !Vec2f.isFinite(endpoint) || movementMode == null) {
             throw new IllegalArgumentException("Route requires spawn, endpoint, and movement mode");
         }
         checkpoints = Objects.requireNonNull(checkpoints, "Route checkpoints are required");
@@ -49,10 +49,6 @@ public record Route(
         Checkpoint terminal = checkpoints.getLast();
         return terminal.type() == CheckpointType.PATROL_MOVE
                 && !terminal.point().equals(checkpoints.getFirst().point());
-    }
-
-    private static boolean finite(Vec2f value) {
-        return value != null && Float.isFinite(value.x()) && Float.isFinite(value.y());
     }
 
     private static void validateDisappearPaths(List<Checkpoint> checkpoints) {

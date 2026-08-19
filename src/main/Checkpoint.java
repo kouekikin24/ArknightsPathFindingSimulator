@@ -16,7 +16,7 @@ public record Checkpoint(
         if (type == null) {
             throw new IllegalArgumentException("Checkpoint type is required");
         }
-        if (point != null && !finite(point)) {
+        if (point != null && !Vec2f.isFinite(point)) {
             throw new IllegalArgumentException("Checkpoint point must be finite");
         }
         if ((type.isMovement() || type == CheckpointType.APPEAR_AT_POS) && point == null) {
@@ -75,9 +75,5 @@ public record Checkpoint(
 
     public static Checkpoint waitForBossRushArea(int area) {
         return new Checkpoint(CheckpointType.WAIT_BOSSRUSH_WAVE, null, 0f, 0f, area);
-    }
-
-    private static boolean finite(Vec2f value) {
-        return Float.isFinite(value.x()) && Float.isFinite(value.y());
     }
 }

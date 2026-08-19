@@ -128,12 +128,13 @@ public final class CollisionResolver {
     }
 
     private int direction(float value) {
-        // Treat both signed zeroes as stationary. Float.compare avoids narrowing
-        // the float to an integer before choosing the DDA direction.
-        if (value == 0f) {
+        // Treat both signed zeroes and float noise as stationary: a denormal
+        // displacement would otherwise sweep an axis whose crossing time is
+        // astronomical, and Inf == Inf could masquerade as a diagonal tie.
+        if (F32.abs(value) <= F32.EPSILON) {
             return 0;
         }
-        return Float.compare(value, 0f) < 0 ? -1 : 1;
+        return value < 0f ? -1 : 1;
     }
 
     private float crossingTime(float position, float displacement, int currentTile, int step) {
