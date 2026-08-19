@@ -91,6 +91,10 @@ final class ScenarioCodec {
         if (text == null) {
             throw new IllegalArgumentException("Scenario text is required");
         }
+        // Files saved with a UTF-8 BOM would otherwise fail on the first line.
+        if (!text.isEmpty() && text.charAt(0) == '\uFEFF') {
+            text = text.substring(1);
+        }
         Integer width = null;
         Integer height = null;
         List<UnitSpec> units = new ArrayList<>();
@@ -253,46 +257,30 @@ final class ScenarioCodec {
     private static UiCheckpoint parseCheckpointBody(String[] parts, int width, int height,
                                                     int lineNumber) {
         UiCheckpointType type = parseCheckpointType(parts[1], lineNumber);
-        return switch (type) {
-            case MOVE, PATROL_MOVE, APPEAR_AT_POS -> {
-                requireParts(parts, 4, "checkpoint " + type.name() + " <x> <y>", lineNumber);
-                UiCell cell = parseCell(parts[2], parts[3], width, height, lineNumber);
-                yield switch (type) {
-                    case MOVE -> UiCheckpoint.move(cell);
-                    case PATROL_MOVE -> UiCheckpoint.patrolMove(cell);
-                    default -> UiCheckpoint.appearAt(cell);
-                };
+        if (type.hasPoint()) {
+            requireParts(parts, 4, "checkpoint " + type.name() + " <x> <y>", lineNumber);
+            return type.create(parseCell(parts[2], parts[3], width, height, lineNumber));
+        }
+        if (type.usesSeconds()) {
+            requireParts(parts, 3, "checkpoint " + type.name() + " <seconds>", lineNumber);
+            float seconds = parseFloat(parts[2], lineNumber);
+            if (!Float.isFinite(seconds) || seconds < 0f) {
+                throw new IllegalArgumentException(
+                        "Checkpoint seconds must be finite and non-negative at line " + lineNumber);
             }
-            case WAIT_FOR_SECONDS, WAIT_FOR_PLAY_TIME, WAIT_CURRENT_FRAGMENT_TIME,
-                    WAIT_CURRENT_WAVE_TIME -> {
-                requireParts(parts, 3, "checkpoint " + type.name() + " <seconds>", lineNumber);
-                float seconds = parseFloat(parts[2], lineNumber);
-                if (!Float.isFinite(seconds) || seconds < 0f) {
-                    throw new IllegalArgumentException(
-                            "Checkpoint seconds must be finite and non-negative at line " + lineNumber);
-                }
-                yield switch (type) {
-                    case WAIT_FOR_SECONDS -> UiCheckpoint.waitForSeconds(seconds);
-                    case WAIT_FOR_PLAY_TIME -> UiCheckpoint.waitForPlayTime(seconds);
-                    case WAIT_CURRENT_FRAGMENT_TIME -> UiCheckpoint.waitForFragmentTime(seconds);
-                    default -> UiCheckpoint.waitForWaveTime(seconds);
-                };
+            return type.create(null, seconds, 0);
+        }
+        if (type.usesArea()) {
+            requireParts(parts, 3, "checkpoint WAIT_BOSSRUSH_WAVE <area>", lineNumber);
+            int area = parseInteger(parts[2], "Area", lineNumber);
+            if (area < 0) {
+                throw new IllegalArgumentException(
+                        "Checkpoint area must be non-negative at line " + lineNumber);
             }
-            case WAIT_BOSSRUSH_WAVE -> {
-                requireParts(parts, 3, "checkpoint WAIT_BOSSRUSH_WAVE <area>", lineNumber);
-                int area = parseInteger(parts[2], "Area", lineNumber);
-                if (area < 0) {
-                    throw new IllegalArgumentException(
-                            "Checkpoint area must be non-negative at line " + lineNumber);
-                }
-                yield UiCheckpoint.waitForBossRushArea(area);
-            }
-            case DISAPPEAR, ALERT -> {
-                requireParts(parts, 2, "checkpoint " + type.name(), lineNumber);
-                yield type == UiCheckpointType.DISAPPEAR
-                        ? UiCheckpoint.disappear() : UiCheckpoint.alert();
-            }
-        };
+            return type.create(null, 0f, area);
+        }
+        requireParts(parts, 2, "checkpoint " + type.name(), lineNumber);
+        return type.create(null);
     }
 
     private static UiCheckpointType parseCheckpointType(String token, int lineNumber) {

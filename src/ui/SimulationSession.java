@@ -53,6 +53,29 @@ public final class SimulationSession {
     private record UnitDraft(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
                              UiMovementMode movementMode, float attributeSpeed,
                              boolean allowDiagonalMove) {
+        UnitDraft withSpawn(UiCell value) {
+            return new UnitDraft(value, endpoint, checkpoints, movementMode, attributeSpeed,
+                    allowDiagonalMove);
+        }
+
+        UnitDraft withEndpoint(UiCell value) {
+            return new UnitDraft(spawn, value, checkpoints, movementMode, attributeSpeed,
+                    allowDiagonalMove);
+        }
+
+        UnitDraft withMovementMode(UiMovementMode value) {
+            return new UnitDraft(spawn, endpoint, checkpoints, value, attributeSpeed,
+                    allowDiagonalMove);
+        }
+
+        UnitDraft withAttributeSpeed(float value) {
+            return new UnitDraft(spawn, endpoint, checkpoints, movementMode, value,
+                    allowDiagonalMove);
+        }
+
+        UnitDraft withAllowDiagonalMove(boolean value) {
+            return new UnitDraft(spawn, endpoint, checkpoints, movementMode, attributeSpeed, value);
+        }
     }
 
     /** Deep copy of every editable scenario field, captured before each edit. */
@@ -116,11 +139,8 @@ public final class SimulationSession {
 
     /** Adds a clone of the selected route as a new unit and selects it. */
     public synchronized void addDraft() {
-        UnitDraft source = draft();
         pushUndo();
-        drafts.add(new UnitDraft(source.spawn(), source.endpoint(),
-                new ArrayList<>(source.checkpoints()), source.movementMode(),
-                source.attributeSpeed(), source.allowDiagonalMove()));
+        drafts.add(cloneDraft(draft()));
         selectedDraft = drafts.size() - 1;
         rebuildSimulator();
     }
@@ -164,20 +184,16 @@ public final class SimulationSession {
 
     public synchronized void placeSpawn(UiCell cell) {
         requireInside(cell);
-        UnitDraft current = draft();
         pushUndo();
-        updateDraft(new UnitDraft(cell, current.endpoint(), current.checkpoints(),
-                current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
+        updateDraft(draft().withSpawn(cell));
         ensureOpen(cell);
         rebuildSimulator();
     }
 
     public synchronized void placeEndpoint(UiCell cell) {
         requireInside(cell);
-        UnitDraft current = draft();
         pushUndo();
-        updateDraft(new UnitDraft(current.spawn(), cell, current.checkpoints(),
-                current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
+        updateDraft(draft().withEndpoint(cell));
         ensureOpen(cell);
         rebuildSimulator();
     }
@@ -214,7 +230,8 @@ public final class SimulationSession {
             throw new IllegalArgumentException("Checkpoint " + index
                     + " has no map cell to keep for " + type.label());
         }
-        UiCheckpoint updated = new UiCheckpoint(type, previous.cell(), value, area);
+        UiCheckpoint updated = new UiCheckpoint(type, previous.cell(),
+                type.usesSeconds() ? value : 0f, type.usesArea() ? area : 0);
         List<UiCheckpoint> next = new ArrayList<>(current);
         next.set(index, updated);
         commitCheckpoints(next);
@@ -275,9 +292,8 @@ public final class SimulationSession {
             }
         }
         UnitDraft current = draft();
-        new Route(toCorePoint(current.spawn().center()), toCorePoint(current.endpoint().center()),
-                toCoreCheckpoints(next), coreMovementMode(current.movementMode()),
-                current.allowDiagonalMove(), true, false);
+        probeRoute(current.spawn(), current.endpoint(), next, current.movementMode(),
+                current.allowDiagonalMove());
         pushUndo();
         current.checkpoints().clear();
         current.checkpoints().addAll(next);
@@ -297,8 +313,7 @@ public final class SimulationSession {
             return;
         }
         pushUndo();
-        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
-                value, current.attributeSpeed(), current.allowDiagonalMove()));
+        updateDraft(current.withMovementMode(value));
         rebuildSimulator();
     }
 
@@ -311,8 +326,7 @@ public final class SimulationSession {
             return;
         }
         pushUndo();
-        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
-                current.movementMode(), value, current.allowDiagonalMove()));
+        updateDraft(current.withAttributeSpeed(value));
         rebuildSimulator();
     }
 
@@ -322,8 +336,7 @@ public final class SimulationSession {
             return;
         }
         pushUndo();
-        updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
-                current.movementMode(), current.attributeSpeed(), value));
+        updateDraft(current.withAllowDiagonalMove(value));
         rebuildSimulator();
     }
 
@@ -738,11 +751,8 @@ public final class SimulationSession {
             }
         }
         for (ScenarioCodec.UnitSpec unit : parsed.units()) {
-            MovementMode parsedMovementMode = unit.movementMode() == UiMovementMode.GROUND
-                    ? MovementMode.GROUND : MovementMode.FLYING;
-            new Route(toCorePoint(unit.spawn().center()), toCorePoint(unit.endpoint().center()),
-                    toCoreCheckpoints(new ArrayList<>(unit.checkpoints())), parsedMovementMode,
-                    unit.allowDiagonalMove(), true, false);
+            probeRoute(unit.spawn(), unit.endpoint(), unit.checkpoints(), unit.movementMode(),
+                    unit.allowDiagonalMove());
         }
         pushUndo();
         initializeScenario(parsed.width(), parsed.height());
@@ -808,6 +818,18 @@ public final class SimulationSession {
             }
         }
         return false;
+    }
+
+    /**
+     * Builds a throwaway Route purely for validation, so an invalid edit or
+     * import is rejected by the same rules the core enforces, before any
+     * scenario state changes.
+     */
+    private static void probeRoute(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+                                   UiMovementMode movementMode, boolean allowDiagonalMove) {
+        new Route(toCorePoint(spawn.center()), toCorePoint(endpoint.center()),
+                toCoreCheckpoints(new ArrayList<>(checkpoints)), coreMovementMode(movementMode),
+                allowDiagonalMove, true, false);
     }
 
     private static List<Checkpoint> toCoreCheckpoints(List<UiCheckpoint> checkpoints) {
@@ -903,7 +925,7 @@ public final class SimulationSession {
                             toCoreCheckpoints(draft.checkpoints()),
                             coreMovementMode(draft.movementMode()), draft.allowDiagonalMove(),
                             true, false),
-                    draft.movementMode() == UiMovementMode.GROUND
+                    coreMovementMode(draft.movementMode()) == MovementMode.GROUND
                             ? UnitConfig.normalGround(draft.attributeSpeed())
                             : UnitConfig.normalFlying(draft.attributeSpeed())));
         }

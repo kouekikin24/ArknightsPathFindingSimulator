@@ -15,6 +15,12 @@ public record UiCheckpoint(UiCheckpointType type, UiCell cell, float value, int 
         if (area < 0) {
             throw new IllegalArgumentException("Checkpoint area must be non-negative");
         }
+        if (value != 0f && !type.usesSeconds()) {
+            throw new IllegalArgumentException(type + " does not use a seconds value");
+        }
+        if (area != 0 && !type.usesArea()) {
+            throw new IllegalArgumentException(type + " does not use an area value");
+        }
     }
 
     public static UiCheckpoint move(UiCell cell) {

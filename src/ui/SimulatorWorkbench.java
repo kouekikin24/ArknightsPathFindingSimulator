@@ -65,6 +65,7 @@ public final class SimulatorWorkbench extends JFrame {
     private static final Color PANEL_BACKGROUND = new Color(250, 252, 250);
     private static final Color BORDER = new Color(196, 207, 200);
     private static final Color VALUE = new Color(31, 48, 41);
+    private static final Color LABEL_TEXT = new Color(94, 111, 101);
 
     private final SimulationSession session = new SimulationSession();
     private final SimulationCanvas canvas = new SimulationCanvas(this::applyEditorTool);
@@ -256,7 +257,7 @@ public final class SimulatorWorkbench extends JFrame {
         timelineSlider.setFocusable(true);
         timelineSlider.setToolTipText("时间轴单位为帧");
         panel.add(timelineSlider, BorderLayout.CENTER);
-        footerStatus.setForeground(new Color(94, 111, 101));
+        footerStatus.setForeground(LABEL_TEXT);
         footerStatus.setBorder(new EmptyBorder(2, 6, 2, 6));
         panel.add(footerStatus, BorderLayout.SOUTH);
         return panel;
@@ -289,6 +290,18 @@ public final class SimulatorWorkbench extends JFrame {
         return scroll;
     }
 
+    /**
+     * Runs one scenario edit with the shared bookkeeping epilogue: playback
+     * stops, any in-flight seek is invalidated, and the UI refreshes from the
+     * session's authoritative snapshot.
+     */
+    private void runEdit(Runnable edit) {
+        edit.run();
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+    }
+
     private JPanel createMapSection() {
         JPanel section = section("地图");
         section.setLayout(new GridBagLayout());
@@ -299,18 +312,12 @@ public final class SimulatorWorkbench extends JFrame {
         actions.setOpaque(false);
         JButton fresh = new JButton("新建");
         fresh.addActionListener(event -> {
-            stopPlayback();
-            invalidateSeek();
-            session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner));
-            refresh(session.snapshotFrame());
+            runEdit(() -> session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner)));
             requestMapFit();
         });
         JButton demo = new JButton("示例");
         demo.addActionListener(event -> {
-            stopPlayback();
-            invalidateSeek();
-            session.loadDemoScenario();
-            refresh(session.snapshotFrame());
+            runEdit(session::loadDemoScenario);
             requestMapFit();
         });
         actions.add(fresh);
@@ -333,12 +340,7 @@ public final class SimulatorWorkbench extends JFrame {
         actions.setOpaque(false);
         JButton add = new JButton("添加");
         add.setToolTipText("复制当前路线为新单位");
-        add.addActionListener(event -> {
-            session.addDraft();
-            stopPlayback();
-            invalidateSeek();
-            refresh(session.snapshotFrame());
-        });
+        add.addActionListener(event -> runEdit(session::addDraft));
         actions.add(add);
         JButton remove = new JButton("删除");
         remove.setToolTipText("删除选中的单位（至少保留一个）");
@@ -348,14 +350,10 @@ public final class SimulatorWorkbench extends JFrame {
                 return;
             }
             try {
-                session.removeDraft(index);
+                runEdit(() -> session.removeDraft(index));
             } catch (IllegalArgumentException error) {
                 footerStatus.setText("无法删除：" + error.getMessage());
-                return;
             }
-            stopPlayback();
-            invalidateSeek();
-            refresh(session.snapshotFrame());
         });
         actions.add(remove);
         section.add(actions, BorderLayout.SOUTH);
@@ -420,75 +418,35 @@ public final class SimulatorWorkbench extends JFrame {
     private JPanel createCombatSection() {
         JPanel section = section("战斗状态");
         section.setLayout(new GridBagLayout());
-        GridBagConstraints c = baseConstraints();
 
-        JLabel stun = new JLabel("眩晕");
-        stun.setForeground(new Color(94, 111, 101));
-        c.gridx = 0;
-        c.gridy = 0;
-        c.weightx = 0d;
-        section.add(stun, c);
-        c.gridx = 1;
-        c.weightx = 1d;
-        JPanel stunRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
-        stunRow.setOpaque(false);
-        stunRow.add(stunSecondsSpinner);
-        stunRow.add(new JLabel("秒"));
         JButton stunButton = new JButton("注入");
         stunButton.setToolTipText("下一帧起眩晕指定秒数");
         stunButton.addActionListener(event -> {
             try {
-                session.applyStun(((Number) stunSecondsSpinner.getValue()).floatValue());
-                footerStatus.setText("已安排：下一帧起眩晕 "
-                        + ((Number) stunSecondsSpinner.getValue()).floatValue() + " 秒");
+                session.applyStun(floatValue(stunSecondsSpinner));
+                footerStatus.setText("已安排：下一帧起眩晕 " + floatValue(stunSecondsSpinner) + " 秒");
             } catch (RuntimeException error) {
                 footerStatus.setText("无法眩晕：" + error.getMessage());
             }
         });
-        stunRow.add(stunButton);
-        section.add(stunRow, c);
+        addCombatRow(section, 0, "眩晕", stunSecondsSpinner, new JLabel("秒"), stunButton);
 
-        JLabel push = new JLabel("击退");
-        push.setForeground(new Color(94, 111, 101));
-        c.gridx = 0;
-        c.gridy = 1;
-        c.weightx = 0d;
-        section.add(push, c);
-        c.gridx = 1;
-        c.weightx = 1d;
-        JPanel pushRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
-        pushRow.setOpaque(false);
-        pushRow.add(pushXSpinner);
-        pushRow.add(pushYSpinner);
-        pushRow.add(pushSecondsSpinner);
-        pushRow.add(new JLabel("秒"));
         JButton pushButton = new JButton("注入");
         pushButton.setToolTipText("下一帧起以给定速度(格/秒)推动指定秒数");
         pushButton.addActionListener(event -> {
             try {
-                session.applyDisplacement(
-                        ((Number) pushXSpinner.getValue()).floatValue(),
-                        ((Number) pushYSpinner.getValue()).floatValue(),
-                        ((Number) pushSecondsSpinner.getValue()).floatValue());
+                session.applyDisplacement(floatValue(pushXSpinner), floatValue(pushYSpinner),
+                        floatValue(pushSecondsSpinner));
                 footerStatus.setText("已安排：下一帧起击退 ("
-                        + ((Number) pushXSpinner.getValue()).floatValue() + ", "
-                        + ((Number) pushYSpinner.getValue()).floatValue() + ") 持续 "
-                        + ((Number) pushSecondsSpinner.getValue()).floatValue() + " 秒");
+                        + floatValue(pushXSpinner) + ", " + floatValue(pushYSpinner) + ") 持续 "
+                        + floatValue(pushSecondsSpinner) + " 秒");
             } catch (RuntimeException error) {
                 footerStatus.setText("无法击退：" + error.getMessage());
             }
         });
-        pushRow.add(pushButton);
-        section.add(pushRow, c);
+        addCombatRow(section, 1, "击退", pushXSpinner, pushYSpinner, pushSecondsSpinner,
+                new JLabel("秒"), pushButton);
 
-        JLabel bind = new JLabel("束缚");
-        bind.setForeground(new Color(94, 111, 101));
-        c.gridx = 0;
-        c.gridy = 2;
-        c.weightx = 0d;
-        section.add(bind, c);
-        c.gridx = 1;
-        c.weightx = 1d;
         bindToggle.setToolTipText("束缚期间单位不移动（下一帧起生效）");
         bindToggle.addActionListener(event -> {
             if (refreshing) {
@@ -502,11 +460,27 @@ public final class SimulatorWorkbench extends JFrame {
                 footerStatus.setText("无法束缚：" + error.getMessage());
             }
         });
-        JPanel bindRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
-        bindRow.setOpaque(false);
-        bindRow.add(bindToggle);
-        section.add(bindRow, c);
+        addCombatRow(section, 2, "束缚", bindToggle);
         return section;
+    }
+
+    /** One labeled combat row: label at gridx 0, controls flow-left at gridx 1. */
+    private static void addCombatRow(JPanel section, int row, String label, Component... fields) {
+        GridBagConstraints c = baseConstraints();
+        JLabel name = new JLabel(label);
+        name.setForeground(LABEL_TEXT);
+        c.gridx = 0;
+        c.gridy = row;
+        c.weightx = 0d;
+        section.add(name, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        JPanel rowPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
+        rowPanel.setOpaque(false);
+        for (Component field : fields) {
+            rowPanel.add(field);
+        }
+        section.add(rowPanel, c);
     }
 
     private JPanel createCheckpointSection() {
@@ -574,27 +548,19 @@ public final class SimulatorWorkbench extends JFrame {
                 return;
             }
             try {
-                session.removeCheckpoint(index);
+                runEdit(() -> session.removeCheckpoint(index));
             } catch (IllegalArgumentException error) {
                 footerStatus.setText("无法删除：" + error.getMessage());
-                return;
             }
-            stopPlayback();
-            invalidateSeek();
-            refresh(session.snapshotFrame());
         });
         actions.add(remove);
         JButton clear = iconButton("×", "清空检查点");
         clear.addActionListener(event -> {
             try {
-                session.clearCheckpoints();
+                runEdit(session::clearCheckpoints);
             } catch (IllegalArgumentException error) {
                 footerStatus.setText("无法清空：" + error.getMessage());
-                return;
             }
-            stopPlayback();
-            invalidateSeek();
-            refresh(session.snapshotFrame());
         });
         actions.add(clear);
         section.add(actions, BorderLayout.SOUTH);
@@ -607,26 +573,17 @@ public final class SimulatorWorkbench extends JFrame {
     private void bindConfigurationControls() {
         movementModeBox.addActionListener(event -> {
             if (!refreshing) {
-                stopPlayback();
-                invalidateSeek();
-                session.setMovementMode((UiMovementMode) movementModeBox.getSelectedItem());
-                refresh(session.snapshotFrame());
+                runEdit(() -> session.setMovementMode((UiMovementMode) movementModeBox.getSelectedItem()));
             }
         });
         speedSpinner.addChangeListener(event -> {
             if (!refreshing) {
-                stopPlayback();
-                invalidateSeek();
-                session.setAttributeSpeed(((Number) speedSpinner.getValue()).floatValue());
-                refresh(session.snapshotFrame());
+                runEdit(() -> session.setAttributeSpeed(floatValue(speedSpinner)));
             }
         });
         diagonalToggle.addActionListener(event -> {
             if (!refreshing) {
-                stopPlayback();
-                invalidateSeek();
-                session.setAllowDiagonalMove(diagonalToggle.isSelected());
-                refresh(session.snapshotFrame());
+                runEdit(() -> session.setAllowDiagonalMove(diagonalToggle.isSelected()));
             }
         });
     }
@@ -671,8 +628,7 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
     }
 
-    private String terrainError(UiCell cell, UiTerrain value) {
-        return session.setTerrain(cell, value) ? null
+    private String terrainError(UiCell cell, UiTerrain value) {        return session.setTerrain(cell, value) ? null
                 : "该格已被起点、终点或检查点占用，不能放置地形";
     }
 
@@ -695,20 +651,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private UiCheckpoint newCheckpointOfType(UiCheckpointType type, UiCell cell) {
-        float seconds = ((Number) checkpointSecondsSpinner.getValue()).floatValue();
-        int area = ((Number) checkpointAreaSpinner.getValue()).intValue();
-        return switch (type) {
-            case MOVE -> UiCheckpoint.move(cell);
-            case PATROL_MOVE -> UiCheckpoint.patrolMove(cell);
-            case APPEAR_AT_POS -> UiCheckpoint.appearAt(cell);
-            case WAIT_FOR_SECONDS -> UiCheckpoint.waitForSeconds(seconds);
-            case WAIT_FOR_PLAY_TIME -> UiCheckpoint.waitForPlayTime(seconds);
-            case WAIT_CURRENT_FRAGMENT_TIME -> UiCheckpoint.waitForFragmentTime(seconds);
-            case WAIT_CURRENT_WAVE_TIME -> UiCheckpoint.waitForWaveTime(seconds);
-            case WAIT_BOSSRUSH_WAVE -> UiCheckpoint.waitForBossRushArea(area);
-            case DISAPPEAR -> UiCheckpoint.disappear();
-            case ALERT -> UiCheckpoint.alert();
-        };
+        return type.create(cell, floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner));
     }
 
     private void addCheckpointFromPanel() {
@@ -720,17 +663,14 @@ public final class SimulatorWorkbench extends JFrame {
         int index = checkpointList.getSelectedIndex();
         try {
             if (index >= 0) {
-                session.insertCheckpointBefore(index, newCheckpointOfType(type, null));
+                runEdit(() -> session.insertCheckpointBefore(index, newCheckpointOfType(type, null)));
             } else {
-                session.addCheckpoint(newCheckpointOfType(type, null));
+                runEdit(() -> session.addCheckpoint(newCheckpointOfType(type, null)));
             }
         } catch (IllegalArgumentException error) {
             footerStatus.setText("无法添加：" + error.getMessage());
             return;
         }
-        stopPlayback();
-        invalidateSeek();
-        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(index >= 0 ? index : checkpointModel.size() - 1);
     }
 
@@ -741,16 +681,12 @@ public final class SimulatorWorkbench extends JFrame {
             return;
         }
         try {
-            session.updateCheckpoint(index, selectedCheckpointType(),
-                    ((Number) checkpointSecondsSpinner.getValue()).floatValue(),
-                    ((Number) checkpointAreaSpinner.getValue()).intValue());
+            runEdit(() -> session.updateCheckpoint(index, selectedCheckpointType(),
+                    floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner)));
         } catch (IllegalArgumentException error) {
             footerStatus.setText("无法更新：" + error.getMessage());
             return;
         }
-        stopPlayback();
-        invalidateSeek();
-        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(index);
     }
 
@@ -760,14 +696,11 @@ public final class SimulatorWorkbench extends JFrame {
             return;
         }
         try {
-            session.moveCheckpoint(index, offset);
+            runEdit(() -> session.moveCheckpoint(index, offset));
         } catch (IllegalArgumentException error) {
             footerStatus.setText("无法移动：" + error.getMessage());
             return;
         }
-        stopPlayback();
-        invalidateSeek();
-        refresh(session.snapshotFrame());
         checkpointList.setSelectedIndex(Math.max(0, Math.min(checkpointModel.size() - 1, index + offset)));
     }
 
@@ -1232,7 +1165,7 @@ public final class SimulatorWorkbench extends JFrame {
         c.weightx = 0d;
         c.insets = new Insets(2, 0, 2, 7);
         JLabel name = new JLabel(label);
-        name.setForeground(new Color(94, 111, 101));
+        name.setForeground(LABEL_TEXT);
         panel.add(name, c);
         c.gridx = 1;
         c.weightx = 1d;
@@ -1285,6 +1218,10 @@ public final class SimulatorWorkbench extends JFrame {
 
     private static int intValue(JSpinner spinner) {
         return ((Number) spinner.getValue()).intValue();
+    }
+
+    private static float floatValue(JSpinner spinner) {
+        return ((Number) spinner.getValue()).floatValue();
     }
 
     /** Keeps combat-row spinners narrow enough that the sidebar never clips horizontally. */

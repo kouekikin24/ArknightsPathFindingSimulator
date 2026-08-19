@@ -59,6 +59,11 @@ public final class SimulatorUiMain {
         verifyInjectionBelowFrontier();
         verifyMultiUnit();
         verifyUndoRedo();
+        verifyScenarioCodecRejection();
+        verifyTimeParsingEdges();
+        verifyTraceCsvExport();
+        verifyCheckpointArgumentValidation();
+        verifyUnitSelectionSemantics();
         System.out.println("UI session verification passed.");
     }
 
@@ -718,6 +723,236 @@ public final class SimulatorUiMain {
         }
         if (available != 100) {
             throw new IllegalStateException("Undo history was not capped, got " + available);
+        }
+    }
+
+    /** Every rejection path of the scenario format must report its line number. */
+    private static void verifyScenarioCodecRejection() {
+        String header = "map 4 3\n";
+        String unit = "spawn 0 1\nendpoint 3 1\nmovement GROUND\nspeed 1.0\ndiagonal true\n";
+        String[][] cases = {
+                {"spawn 0 1\n" + unit.substring(0, 0), "map"},
+                {header + "map 4 3\n" + unit, "twice"},
+                {header + "unit 2\n" + unit, "sequential"},
+                {header + "unit 1\nspawn 9 1\nendpoint 3 1\nmovement GROUND\nspeed 1.0\ndiagonal true\n",
+                        "outside the map"},
+                {header + "spawn 0 1\nspawn 1 1\nendpoint 3 1\nmovement GROUND\nspeed 1.0\ndiagonal true\n",
+                        "twice"},
+                {header + "spawn 0 1\nendpoint 3 1\nmovement GROUND\nspeed 1.0\ndiagonal true\n"
+                        + "checkpoint MOVE 1 1\ncheckpoint MOVE 1 1\n", "Duplicate checkpoint"},
+                {header + unit + "checkpoint WAIT_FOR_SECONDS -1\n", "non-negative"},
+                {header + unit + "checkpoint WAIT_BOSSRUSH_WAVE -2\n", "non-negative"},
+                {header + "spawn 0 1\nendpoint 3 1\n", "movement, speed, and diagonal"},
+                {header + unit + "hover 1\n", "Unknown directive"},
+                {header + unit + "checkpoint MOVE 1\n", "Expected"},
+                {header + "spawn 0 1\nendpoint 3 1\nmovement GROUND\nspeed nope\ndiagonal true\n",
+                        "not a number"},
+                {header + "spawn 0 1\nendpoint 3 1\nmovement GROUND\nspeed 0.05\ndiagonal true\n",
+                        "at least 0.1"},
+                {header + unit + "terrain 2 2 GRASS\n", "Unknown terrain"},
+                {header + unit + "checkpoint MADE_UP 1 1\n", "Unknown checkpoint type"},
+                {header + "diagonal yes\nspawn 0 1\nendpoint 3 1\nmovement GROUND\nspeed 1.0\n",
+                        "true or false"},
+        };
+        for (String[] testCase : cases) {
+            String text = testCase[0];
+            String messagePart = testCase[1];
+            try {
+                new SimulationSession().importScenario(text);
+                throw new IllegalStateException("Import accepted malformed text expecting '" + messagePart + "'");
+            } catch (IllegalArgumentException expected) {
+                if (expected.getMessage() == null || !expected.getMessage().contains(messagePart)) {
+                    throw new IllegalStateException("Rejection '" + messagePart
+                            + "' produced the wrong message: " + expected.getMessage());
+                }
+            }
+        }
+
+        // A rejected import must leave the current scenario untouched.
+        SimulationSession untouched = new SimulationSession();
+        String before = untouched.exportScenario();
+        try {
+            untouched.importScenario(header + "bogus");
+        } catch (IllegalArgumentException expected) {
+            // Expected: the import is rejected.
+        }
+        if (!untouched.exportScenario().equals(before)) {
+            throw new IllegalStateException("A rejected import mutated the current scenario");
+        }
+
+        // Files saved with a UTF-8 BOM parse exactly like their plain form.
+        SimulationSession demo = new SimulationSession();
+        String plain = demo.exportScenario();
+        SimulationSession bom = new SimulationSession();
+        bom.newScenario(6, 5);
+        bom.importScenario("﻿" + plain);
+        if (!bom.exportScenario().equals(plain)) {
+            throw new IllegalStateException("A BOM-prefixed scenario did not round trip");
+        }
+
+        // A terrain cell on a route point is rejected before any state changes.
+        String conflict = plain.replace("terrain 7 3 BOX", "terrain 1 1 BOX");
+        if (conflict.equals(plain)) {
+            throw new IllegalStateException("Demo scenario export changed; update the conflict fixture");
+        }
+        try {
+            new SimulationSession().importScenario(conflict);
+            throw new IllegalStateException("Import accepted terrain on the spawn cell");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("conflicts with a route point")) {
+                throw new IllegalStateException("Terrain/route conflict error was not reported");
+            }
+        }
+    }
+
+    private static void verifyTimeParsingEdges() {
+        if (SimulationSession.parseTimeToFrame("  16  ") != 16
+                || SimulationSession.parseTimeToFrame(" 1/30 ") != 1
+                || SimulationSession.parseTimeToFrame("-0") != 0
+                || SimulationSession.parseTimeToFrame("0") != 0) {
+            throw new IllegalStateException("Whitespace and signed-zero time forms parsed incorrectly");
+        }
+        expectParseFailure(null, "required");
+        expectParseFailure("", "required");
+        expectParseFailure("   ", "required");
+        expectParseFailure("-1", "non-negative");
+        expectParseFailure("1/7", "n/30");
+        expectParseFailure("abc", "Invalid time");
+        expectParseFailure("99999999999999999999", "too large");
+        try {
+            SimulationSession.formatFrameTime(-1);
+            throw new IllegalStateException("Formatting a negative frame was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("non-negative")) {
+                throw new IllegalStateException("Negative frame format error was not reported");
+            }
+        }
+    }
+
+    private static void expectParseFailure(String text, String messagePart) {
+        try {
+            SimulationSession.parseTimeToFrame(text);
+            throw new IllegalStateException("Time input expecting '" + messagePart + "' was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (expected.getMessage() == null || !expected.getMessage().contains(messagePart)) {
+                throw new IllegalStateException("Time parse error '" + messagePart
+                        + "' produced: " + expected.getMessage());
+            }
+        }
+    }
+
+    private static void verifyTraceCsvExport() {
+        SimulationSession session = new SimulationSession();
+        session.newScenario(4, 3);
+        session.setTerrain(new UiCell(1, 0), UiTerrain.WALL);
+        session.setTerrain(new UiCell(1, 1), UiTerrain.WALL);
+        session.setTerrain(new UiCell(1, 2), UiTerrain.WALL);
+        session.tickFrame();
+        String csv = session.exportTraceCsv();
+        boolean diagnosticRow = false;
+        for (String row : csv.split("\n")) {
+            if (row.startsWith("0,1,") && row.contains("阻挡") && row.contains("blocked unreachable ENDPOINT")) {
+                diagnosticRow = true;
+            }
+        }
+        if (!diagnosticRow) {
+            throw new IllegalStateException("CSV lost the blocked diagnostic transition row");
+        }
+
+        // Multi-unit export is frame-major with one row per unit per frame.
+        SimulationSession multi = new SimulationSession();
+        multi.newScenario(8, 3);
+        multi.addDraft();
+        for (int frame = 0; frame < 5; frame++) {
+            multi.tickFrame();
+        }
+        String[] rows = multi.exportTraceCsv().split("\n");
+        int frames = multi.generatedFrameCount();
+        if (rows.length != frames * 2 + 1) {
+            throw new IllegalStateException("Multi-unit CSV row count was " + rows.length
+                    + ", expected " + (frames * 2 + 1));
+        }
+        if (!rows[1].startsWith("0,0,") || !rows[2].startsWith("1,0,")
+                || !rows[3].startsWith("0,1,") || !rows[4].startsWith("1,1,")) {
+            throw new IllegalStateException("CSV rows are not frame-major across units");
+        }
+    }
+
+    private static void verifyCheckpointArgumentValidation() {
+        try {
+            new UiCheckpoint(UiCheckpointType.MOVE, new UiCell(1, 1), 5f, 0);
+            throw new IllegalStateException("A MOVE checkpoint carrying seconds was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("seconds")) {
+                throw new IllegalStateException("Misplaced-argument error was not reported");
+            }
+        }
+        try {
+            new UiCheckpoint(UiCheckpointType.DISAPPEAR, null, 0f, 3);
+            throw new IllegalStateException("A DISAPPEAR checkpoint carrying an area was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("area")) {
+                throw new IllegalStateException("Misplaced-area error was not reported");
+            }
+        }
+
+        // Updating to a type that ignores the spinners normalizes them away.
+        SimulationSession session = new SimulationSession();
+        session.newScenario(6, 3);
+        session.addCheckpoint(UiCheckpoint.waitForSeconds(1f));
+        session.updateCheckpoint(0, UiCheckpointType.ALERT, 5f, 3);
+        String exported = session.exportScenario();
+        if (!exported.contains("checkpoint ALERT\n")) {
+            throw new IllegalStateException("Type update kept irrelevant arguments: " + exported);
+        }
+
+        // The enum factory is the single type-to-construction mapping.
+        UiCheckpoint created = UiCheckpointType.WAIT_FOR_SECONDS.create(null, 2f, 0);
+        if (created.value() != 2f || created.cell() != null) {
+            throw new IllegalStateException("Enum factory lost the seconds argument");
+        }
+        UiCheckpoint moved = UiCheckpointType.PATROL_MOVE.create(new UiCell(2, 2));
+        if (!new UiCell(2, 2).equals(moved.cell())) {
+            throw new IllegalStateException("Enum factory lost the cell argument");
+        }
+    }
+
+    private static void verifyUnitSelectionSemantics() {
+        SimulationSession session = new SimulationSession();
+        session.newScenario(8, 3);
+        try {
+            session.selectDraft(1);
+            throw new IllegalStateException("Selecting a missing unit was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("outside the unit list")) {
+                throw new IllegalStateException("Out-of-range selection error was not reported");
+            }
+        }
+
+        session.addDraft();
+        session.addDraft();
+        session.selectDraft(2);
+        session.removeDraft(0);
+        if (session.selectedDraftIndex() != 1 || session.unitCount() != 2) {
+            throw new IllegalStateException("Removing an earlier unit did not shift the selection");
+        }
+
+        // A run event recorded for unit 1 replays against unit 1 after a backward seek.
+        SimulationSession replay = new SimulationSession();
+        replay.newScenario(8, 3);
+        replay.addDraft();
+        replay.selectDraft(1);
+        replay.applyStun(1f);
+        UiFrame first = replay.tickFrame();
+        if (!"眩晕".equals(first.units().get(1).unitMode())
+                || !"移动".equals(first.units().get(0).unitMode())) {
+            throw new IllegalStateException("The recorded stun did not target the selected unit only");
+        }
+        replay.seekFrame(0);
+        UiFrame replayed = replay.seekFrame(1);
+        if (!"眩晕".equals(replayed.units().get(1).unitMode())
+                || !"移动".equals(replayed.units().get(0).unitMode())) {
+            throw new IllegalStateException("Replay did not re-apply the stun to unit 1");
         }
     }
 
