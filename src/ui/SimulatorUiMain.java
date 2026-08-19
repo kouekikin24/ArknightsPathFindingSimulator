@@ -58,6 +58,7 @@ public final class SimulatorUiMain {
         verifyCombatStateInjection();
         verifyInjectionBelowFrontier();
         verifyMultiUnit();
+        verifyUndoRedo();
         System.out.println("UI session verification passed.");
     }
 
@@ -592,6 +593,132 @@ public final class SimulatorUiMain {
         canvas.setSnapshot(frame.units().get(0));
         canvas.setUnits(frame.units());
         verifyCanvasPaint(canvas, 800, 560);
+    }
+
+    private static void verifyUndoRedo() {
+        SimulationSession session = new SimulationSession();
+        if (session.canUndo() || session.canRedo() || session.undo() || session.redo()) {
+            throw new IllegalStateException("A fresh session must start with empty undo history");
+        }
+        String pristine = session.exportScenario();
+
+        session.setTerrain(new UiCell(3, 3), UiTerrain.WALL);
+        session.placeSpawn(new UiCell(2, 2));
+        session.addCheckpoint(UiCheckpoint.waitForSeconds(1.5f));
+        session.addDraft();
+        session.setAllowDiagonalMove(false);
+        for (int edit = 0; edit < 5; edit++) {
+            if (!session.undo()) {
+                throw new IllegalStateException("Undo stopped early at step " + edit);
+            }
+        }
+        if (!session.exportScenario().equals(pristine)) {
+            throw new IllegalStateException("Undoing every edit did not restore the exported scenario");
+        }
+        if (session.canUndo()) {
+            throw new IllegalStateException("Undo stack outlived its edits");
+        }
+        for (int edit = 0; edit < 5; edit++) {
+            if (!session.redo()) {
+                throw new IllegalStateException("Redo stopped early at step " + edit);
+            }
+        }
+        if (session.unitCount() != 2 || session.snapshot().terrainAt(new UiCell(3, 3)) != UiTerrain.WALL
+                || session.snapshot().allowDiagonalMove()) {
+            throw new IllegalStateException("Redo did not restore the edited scenario");
+        }
+
+        // No-op and rejected edits must not consume undo slots.
+        session.setTerrain(new UiCell(3, 3), UiTerrain.WALL);
+        try {
+            session.addCheckpoint(UiCheckpoint.disappear());
+            throw new IllegalStateException("A trailing DISAPPEAR checkpoint was accepted");
+        } catch (IllegalArgumentException expected) {
+        }
+        int applied = 0;
+        while (session.undo()) {
+            applied++;
+            if (applied > 20) {
+                throw new IllegalStateException("Undo history grew without bound");
+            }
+        }
+        if (applied != 5 || !session.exportScenario().equals(pristine)) {
+            throw new IllegalStateException("No-op or rejected edits consumed undo slots");
+        }
+        for (int edit = 0; edit < 5; edit++) {
+            session.redo();
+        }
+
+        session.undo();
+        session.setTerrain(new UiCell(4, 4), UiTerrain.PIT);
+        if (session.canRedo() || session.redo()) {
+            throw new IllegalStateException("A fresh edit did not clear the redo branch");
+        }
+
+        String beforeReset = session.exportScenario();
+        session.newScenario(6, 4);
+        if (session.mapWidth() != 6 || session.mapHeight() != 4 || !session.canUndo()) {
+            throw new IllegalStateException("newScenario was not recorded for undo");
+        }
+        session.loadDemoScenario();
+        if (!session.undo() || session.mapWidth() != 6 || session.mapHeight() != 4) {
+            throw new IllegalStateException("Undo did not restore the scenario replaced by the demo");
+        }
+        if (!session.undo() || !session.exportScenario().equals(beforeReset)) {
+            throw new IllegalStateException("Undo did not restore the scenario replaced by newScenario");
+        }
+
+        String edited = session.exportScenario();
+        session.importScenario(pristine);
+        if (!session.exportScenario().equals(pristine)) {
+            throw new IllegalStateException("Import did not apply");
+        }
+        if (!session.undo() || !session.exportScenario().equals(edited)) {
+            throw new IllegalStateException("Undo did not restore the scenario replaced by import");
+        }
+
+        // Combat injections and playback progress are run state, not scenario state.
+        session.tickFrame();
+        session.tickFrame();
+        session.applyStun(0.2f);
+        session.setTerrain(new UiCell(6, 6), UiTerrain.WALL);
+        if (session.snapshot().frame() != 0 || session.snapshot().terrainAt(new UiCell(6, 6)) != UiTerrain.WALL) {
+            throw new IllegalStateException("A scenario edit did not restart playback");
+        }
+        if (!session.undo() || session.snapshot().terrainAt(new UiCell(6, 6)) != UiTerrain.OPEN) {
+            throw new IllegalStateException("Undo did not revert the terrain edit");
+        }
+        UiSnapshot afterUndoTick = session.tick();
+        if (!"移动".equals(afterUndoTick.unitMode())) {
+            throw new IllegalStateException("Undo leaked a cleared combat injection into the new run");
+        }
+        if (!session.redo() || session.snapshot().frame() != 0) {
+            throw new IllegalStateException("Redo must restart playback from S[0]");
+        }
+
+        // Unit selection is captured with the scenario state.
+        session.addDraft();
+        session.selectDraft(0);
+        session.setTerrain(new UiCell(9, 1), UiTerrain.BOX);
+        if (!session.undo() || session.selectedDraftIndex() != 0 || session.unitCount() != 3) {
+            throw new IllegalStateException("Undo did not restore the selected unit");
+        }
+        if (!session.undo() || session.unitCount() != 2 || session.selectedDraftIndex() != 1) {
+            throw new IllegalStateException("Undo did not restore the unit list");
+        }
+
+        // History is capped at 100 entries.
+        SimulationSession capped = new SimulationSession();
+        for (int step = 0; step < 105; step++) {
+            capped.setTerrain(new UiCell(3, 3), step % 2 == 0 ? UiTerrain.WALL : UiTerrain.OPEN);
+        }
+        int available = 0;
+        while (capped.undo()) {
+            available++;
+        }
+        if (available != 100) {
+            throw new IllegalStateException("Undo history was not capped, got " + available);
+        }
     }
 
     private static void verifyTrajectoryTooltip(SimulationCanvas canvas) {

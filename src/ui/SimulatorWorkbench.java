@@ -1,11 +1,15 @@
+import javax.swing.AbstractAction;
+import javax.swing.ActionMap;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ButtonGroup;
 import javax.swing.Icon;
+import javax.swing.InputMap;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -17,6 +21,7 @@ import javax.swing.JSpinner;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.JToolBar;
+import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
@@ -37,6 +42,7 @@ import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Point;
+import java.awt.event.ActionEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
@@ -72,6 +78,8 @@ public final class SimulatorWorkbench extends JFrame {
     private final AtomicLong seekRequest = new AtomicLong();
     private Future<?> pendingSeek;
     private final JToggleButton playButton = new JToggleButton("▶");
+    private final JButton undoButton = iconButton("↶", "撤销上一步场景编辑（Ctrl+Z）");
+    private final JButton redoButton = iconButton("↷", "重做（Ctrl+Y）");
     private final JComboBox<String> playbackRate = new JComboBox<>(new String[]{"1×", "3×", "10×"});
     private final JCheckBox showPathToggle = new JCheckBox("路线图", false);
     private final JCheckBox showTrajectoryToggle = new JCheckBox("实际轨迹", true);
@@ -128,6 +136,7 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setViewportSize(mapScrollPane.getViewport().getWidth(), mapScrollPane.getViewport().getHeight());
         bindConfigurationControls();
         bindTimelineControls();
+        bindKeyboardShortcuts();
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent event) {
@@ -166,30 +175,21 @@ public final class SimulatorWorkbench extends JFrame {
         title.setForeground(VALUE);
         toolbar.add(title);
         toolbar.addSeparator(new Dimension(16, 1));
-        JButton step = iconButton("⏭", "推进一帧");
-        step.addActionListener(event -> {
-            stopPlayback();
-            if (!session.canTick()) {
-                footerStatus.setText("模拟已到达终态");
-                return;
-            }
-            invalidateSeek();
-            refresh(session.tickFrame());
-        });
+        JButton step = iconButton("⏭", "推进一帧（N）");
+        step.addActionListener(event -> stepOneFrame());
         toolbar.add(step);
-        playButton.setToolTipText("运行");
+        playButton.setToolTipText("运行（空格）");
         playButton.setFocusable(false);
         playButton.setPreferredSize(new Dimension(38, 29));
         playButton.addActionListener(event -> togglePlayback());
         toolbar.add(playButton);
-        JButton reset = iconButton("↺", "重置运行");
-        reset.addActionListener(event -> {
-            stopPlayback();
-            invalidateSeek();
-            session.resetSimulation();
-            refresh(session.snapshotFrame());
-        });
+        JButton reset = iconButton("↺", "重置运行（R）");
+        reset.addActionListener(event -> resetRun());
         toolbar.add(reset);
+        undoButton.addActionListener(event -> undoEdit());
+        toolbar.add(undoButton);
+        redoButton.addActionListener(event -> redoEdit());
+        toolbar.add(redoButton);
         toolbar.addSeparator(new Dimension(12, 1));
         toolbar.add(new JLabel("回放"));
         playbackRate.setMaximumSize(new Dimension(78, 29));
@@ -767,13 +767,78 @@ public final class SimulatorWorkbench extends JFrame {
         checkpointList.setSelectedIndex(Math.max(0, Math.min(checkpointModel.size() - 1, index + offset)));
     }
 
+    private void stepOneFrame() {
+        stopPlayback();
+        if (!session.canTick()) {
+            footerStatus.setText("模拟已到达终态");
+            return;
+        }
+        invalidateSeek();
+        refresh(session.tickFrame());
+    }
+
+    private void resetRun() {
+        stopPlayback();
+        invalidateSeek();
+        session.resetSimulation();
+        refresh(session.snapshotFrame());
+    }
+
+    private void undoEdit() {
+        historyEdit(true);
+    }
+
+    private void redoEdit() {
+        historyEdit(false);
+    }
+
+    /** Applies one undo or redo; scenario size changes refit the map view. */
+    private void historyEdit(boolean isUndo) {
+        stopPlayback();
+        invalidateSeek();
+        int widthBefore = session.mapWidth();
+        int heightBefore = session.mapHeight();
+        boolean applied = isUndo ? session.undo() : session.redo();
+        if (!applied) {
+            footerStatus.setText(isUndo ? "没有可撤销的操作" : "没有可重做的操作");
+            return;
+        }
+        refresh(session.snapshotFrame());
+        if (session.mapWidth() != widthBefore || session.mapHeight() != heightBefore) {
+            requestMapFit();
+        }
+        footerStatus.setText(isUndo ? "已撤销" : "已重做");
+    }
+
+    private void bindKeyboardShortcuts() {
+        InputMap keys = getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        ActionMap actions = getRootPane().getActionMap();
+        shortcut(keys, actions, "undo-edit", KeyStroke.getKeyStroke("control Z"), this::undoEdit);
+        shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control Y"), this::redoEdit);
+        shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control shift Z"), this::redoEdit);
+        shortcut(keys, actions, "toggle-playback", KeyStroke.getKeyStroke("SPACE"), playButton::doClick);
+        shortcut(keys, actions, "step-frame", KeyStroke.getKeyStroke('N'), this::stepOneFrame);
+        shortcut(keys, actions, "reset-run", KeyStroke.getKeyStroke('R'), this::resetRun);
+    }
+
+    private static void shortcut(InputMap keys, ActionMap actions, String name,
+                                  KeyStroke stroke, Runnable action) {
+        keys.put(stroke, name);
+        actions.put(name, new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                action.run();
+            }
+        });
+    }
+
     private void togglePlayback() {
         if (!playButton.isSelected()) {
             stopPlayback();
             return;
         }
         playButton.setText("Ⅱ");
-        playButton.setToolTipText("暂停");
+        playButton.setToolTipText("暂停（空格）");
         playbackTimer.start();
     }
 
@@ -799,7 +864,7 @@ public final class SimulatorWorkbench extends JFrame {
         playbackTimer.stop();
         playButton.setSelected(false);
         playButton.setText("▶");
-        playButton.setToolTipText("运行");
+        playButton.setToolTipText("运行（空格）");
     }
 
     private int framesPerTimerTick() {
@@ -944,6 +1009,8 @@ public final class SimulatorWorkbench extends JFrame {
                     ? trajectoriesThroughFrame(frame.frame()) : List.of());
             timelineSlider.setMaximum(Math.max(0, session.generatedLastFrame()));
             timelineSlider.setValue(Math.min(snapshot.frame(), timelineSlider.getMaximum()));
+            undoButton.setEnabled(session.canUndo());
+            redoButton.setEnabled(session.canRedo());
             frameValue.setText(Integer.toString(snapshot.frame()));
             timeValue.setText(SimulationSession.formatFrameTime(snapshot.frame()));
             sliderFrameValue.setText("帧 " + snapshot.frame());

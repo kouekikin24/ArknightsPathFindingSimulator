@@ -1,5 +1,6 @@
-import java.util.ArrayList;
 import java.util.AbstractList;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -9,6 +10,8 @@ import java.util.List;
  */
 public final class SimulationSession {
     private static final int MINIMUM_DIMENSION = 2;
+    /** Scenario snapshots kept for undo/redo; older entries are discarded first. */
+    private static final int UNDO_LIMIT = 100;
     /**
      * Frames replayed per lock acquisition. Small chunks bound how long a
      * background seek can hold the session lock, keeping EDT edits responsive.
@@ -37,6 +40,10 @@ public final class SimulationSession {
     private long globalFrame;
     /** Recorded combat injections; each applies before the tick that produces its frame + 1. */
     private final List<RunEvent> runEvents = new ArrayList<>();
+    /** Scenario states before each applied edit, oldest first. */
+    private final ArrayDeque<ScenarioSnapshot> undoStack = new ArrayDeque<>();
+    /** States undone and available for redo, oldest first. */
+    private final ArrayDeque<ScenarioSnapshot> redoStack = new ArrayDeque<>();
 
     private List<UiTerrain> cachedTerrainView;
     private PathMap cachedSegmentSource;
@@ -46,6 +53,11 @@ public final class SimulationSession {
     private record UnitDraft(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
                              UiMovementMode movementMode, float attributeSpeed,
                              boolean allowDiagonalMove) {
+    }
+
+    /** Deep copy of every editable scenario field, captured before each edit. */
+    private record ScenarioSnapshot(int width, int height, UiTerrain[] terrain,
+                                     List<UnitDraft> drafts, int selectedDraft) {
     }
 
     /** Signals a normal attempt to advance beyond a confirmed terminal frame. */
@@ -62,11 +74,14 @@ public final class SimulationSession {
     }
 
     public synchronized void newScenario(int newWidth, int newHeight) {
+        requireDimensions(newWidth, newHeight);
+        pushUndo();
         initializeScenario(newWidth, newHeight);
         rebuildSimulator();
     }
 
     public synchronized void loadDemoScenario() {
+        pushUndo();
         initializeScenario(12, 8);
         UnitDraft demo = new UnitDraft(new UiCell(1, 1), new UiCell(10, 6),
                 new ArrayList<>(List.of(UiCheckpoint.move(new UiCell(5, 1)),
@@ -102,6 +117,7 @@ public final class SimulationSession {
     /** Adds a clone of the selected route as a new unit and selects it. */
     public synchronized void addDraft() {
         UnitDraft source = draft();
+        pushUndo();
         drafts.add(new UnitDraft(source.spawn(), source.endpoint(),
                 new ArrayList<>(source.checkpoints()), source.movementMode(),
                 source.attributeSpeed(), source.allowDiagonalMove()));
@@ -116,6 +132,7 @@ public final class SimulationSession {
         if (index < 0 || index >= drafts.size()) {
             throw new IllegalArgumentException("Unit index is outside the unit list");
         }
+        pushUndo();
         drafts.remove(index);
         selectedDraft = Math.min(selectedDraft, drafts.size() - 1);
         rebuildSimulator();
@@ -139,6 +156,7 @@ public final class SimulationSession {
         if (terrain[index] == value) {
             return true;
         }
+        pushUndo();
         terrain[index] = value;
         rebuildSimulator();
         return true;
@@ -147,6 +165,7 @@ public final class SimulationSession {
     public synchronized void placeSpawn(UiCell cell) {
         requireInside(cell);
         UnitDraft current = draft();
+        pushUndo();
         updateDraft(new UnitDraft(cell, current.endpoint(), current.checkpoints(),
                 current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
         ensureOpen(cell);
@@ -156,6 +175,7 @@ public final class SimulationSession {
     public synchronized void placeEndpoint(UiCell cell) {
         requireInside(cell);
         UnitDraft current = draft();
+        pushUndo();
         updateDraft(new UnitDraft(current.spawn(), cell, current.checkpoints(),
                 current.movementMode(), current.attributeSpeed(), current.allowDiagonalMove()));
         ensureOpen(cell);
@@ -258,6 +278,7 @@ public final class SimulationSession {
         new Route(toCorePoint(current.spawn().center()), toCorePoint(current.endpoint().center()),
                 toCoreCheckpoints(next), coreMovementMode(current.movementMode()),
                 current.allowDiagonalMove(), true, false);
+        pushUndo();
         current.checkpoints().clear();
         current.checkpoints().addAll(next);
         for (UiCheckpoint checkpoint : current.checkpoints()) {
@@ -275,6 +296,7 @@ public final class SimulationSession {
         if (current.movementMode() == value) {
             return;
         }
+        pushUndo();
         updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
                 value, current.attributeSpeed(), current.allowDiagonalMove()));
         rebuildSimulator();
@@ -288,6 +310,7 @@ public final class SimulationSession {
         if (current.attributeSpeed() == value) {
             return;
         }
+        pushUndo();
         updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
                 current.movementMode(), value, current.allowDiagonalMove()));
         rebuildSimulator();
@@ -298,9 +321,98 @@ public final class SimulationSession {
         if (current.allowDiagonalMove() == value) {
             return;
         }
+        pushUndo();
         updateDraft(new UnitDraft(current.spawn(), current.endpoint(), current.checkpoints(),
                 current.movementMode(), current.attributeSpeed(), value));
         rebuildSimulator();
+    }
+
+    // ----- undo / redo -------------------------------------------------------
+
+    /** Whether a scenario edit is available to undo. */
+    public synchronized boolean canUndo() {
+        return !undoStack.isEmpty();
+    }
+
+    /** Whether an undone edit is available to redo. */
+    public synchronized boolean canRedo() {
+        return !redoStack.isEmpty();
+    }
+
+    /**
+     * Reverts the most recent scenario edit. Scenario edits are map and route
+     * changes (including new/demo/import); combat injections and playback
+     * progress are run state, not scenario state, and are not undoable. Like
+     * every scenario edit, undoing restarts playback from S[0].
+     *
+     * @return false when there is nothing to undo
+     */
+    public synchronized boolean undo() {
+        ScenarioSnapshot previous = undoStack.pollLast();
+        if (previous == null) {
+            return false;
+        }
+        redoStack.addLast(captureScenario());
+        restoreScenario(previous);
+        return true;
+    }
+
+    public synchronized boolean redo() {
+        ScenarioSnapshot next = redoStack.pollLast();
+        if (next == null) {
+            return false;
+        }
+        undoStack.addLast(captureScenario());
+        restoreScenario(next);
+        return true;
+    }
+
+    /** Current map dimensions, for UI layout decisions that must not build snapshots. */
+    public synchronized int mapWidth() {
+        return width;
+    }
+
+    public synchronized int mapHeight() {
+        return height;
+    }
+
+    /** Remembers the state before an edit; a fresh edit invalidates the redo branch. */
+    private void pushUndo() {
+        if (terrain == null) {
+            // The very first scenario load has no prior state to restore.
+            return;
+        }
+        undoStack.addLast(captureScenario());
+        if (undoStack.size() > UNDO_LIMIT) {
+            undoStack.removeFirst();
+        }
+        redoStack.clear();
+    }
+
+    private ScenarioSnapshot captureScenario() {
+        List<UnitDraft> copies = new ArrayList<>(drafts.size());
+        for (UnitDraft draft : drafts) {
+            copies.add(cloneDraft(draft));
+        }
+        return new ScenarioSnapshot(width, height, terrain.clone(), copies, selectedDraft);
+    }
+
+    private void restoreScenario(ScenarioSnapshot snapshot) {
+        width = snapshot.width();
+        height = snapshot.height();
+        terrain = snapshot.terrain().clone();
+        drafts.clear();
+        for (UnitDraft draft : snapshot.drafts()) {
+            drafts.add(cloneDraft(draft));
+        }
+        selectedDraft = snapshot.selectedDraft();
+        rebuildSimulator();
+    }
+
+    private static UnitDraft cloneDraft(UnitDraft draft) {
+        return new UnitDraft(draft.spawn(), draft.endpoint(),
+                new ArrayList<>(draft.checkpoints()), draft.movementMode(),
+                draft.attributeSpeed(), draft.allowDiagonalMove());
     }
 
     // ----- playback ----------------------------------------------------------
@@ -632,6 +744,7 @@ public final class SimulationSession {
                     toCoreCheckpoints(new ArrayList<>(unit.checkpoints())), parsedMovementMode,
                     unit.allowDiagonalMove(), true, false);
         }
+        pushUndo();
         initializeScenario(parsed.width(), parsed.height());
         drafts.clear();
         for (ScenarioCodec.UnitSpec unit : parsed.units()) {
@@ -753,9 +866,7 @@ public final class SimulationSession {
     }
 
     private void initializeScenario(int newWidth, int newHeight) {
-        if (newWidth < MINIMUM_DIMENSION || newHeight < MINIMUM_DIMENSION) {
-            throw new IllegalArgumentException("Map dimensions must be at least " + MINIMUM_DIMENSION);
-        }
+        requireDimensions(newWidth, newHeight);
         width = newWidth;
         height = newHeight;
         terrain = new UiTerrain[width * height];
@@ -820,6 +931,12 @@ public final class SimulationSession {
             if (allUnitsTerminal()) {
                 terminalFrame = 0;
             }
+        }
+    }
+
+    private void requireDimensions(int newWidth, int newHeight) {
+        if (newWidth < MINIMUM_DIMENSION || newHeight < MINIMUM_DIMENSION) {
+            throw new IllegalArgumentException("Map dimensions must be at least " + MINIMUM_DIMENSION);
         }
     }
 
