@@ -23,7 +23,15 @@ public final class SimulatorUiMain {
 
     public static void main(String[] args) {
         if (args.length == 1 && "--verify".equals(args[0])) {
-            verifySession();
+            // The policy checks construct a real workbench, whose AWT event
+            // thread would keep the JVM alive; exit explicitly with a status.
+            try {
+                verifySession();
+            } catch (Throwable failure) {
+                failure.printStackTrace();
+                System.exit(1);
+            }
+            System.exit(0);
             return;
         }
         if (GraphicsEnvironment.isHeadless()) {
@@ -71,7 +79,100 @@ public final class SimulatorUiMain {
         verifyRejectionFlash(after);
         verifyDisplayYUp();
         verifyTerrainAlignment(after);
+        verifyVectorDisplayFlip();
+        verifyWorkbenchPolicies();
         System.out.println("UI session verification passed.");
+    }
+
+    /**
+     * World-space vector arrows follow the y-up display: a positive world-y
+     * velocity must point toward smaller canvas y (upward on screen).
+     */
+    private static void verifyVectorDisplayFlip() {
+        UiSnapshot snapshot = new UiSnapshot(8, 3, java.util.Collections.nCopies(24, UiTerrain.OPEN),
+                new UiPoint(0.5f, 1.5f), new UiPoint(7.5f, 1.5f), List.of(),
+                UiMovementMode.GROUND, 1f, true, 3, "移动", 0, false, false, false,
+                new UiPoint(4.5f, 1.5f), new UiPoint(4.5f, 1.5f), new UiPoint(0f, 1f),
+                UiPoint.ZERO, UiPoint.ZERO, new UiCell(4, 1), null, null, false, "", 0f,
+                List.of(), false);
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(canvas.fitZoom());
+                canvas.setSize(canvas.getPreferredSize());
+                BufferedImage image = new BufferedImage(canvas.getWidth(), canvas.getHeight(),
+                        BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = image.createGraphics();
+                try {
+                    canvas.paint(graphics);
+                } finally {
+                    graphics.dispose();
+                }
+                Point center = canvas.canvasPointForWorld(4.5d, 1.5d);
+                if (!isVectorRed(image, center.x, center.y - 30)) {
+                    throw new IllegalStateException(
+                            "Velocity arrow with positive world-y must point up on screen");
+                }
+                if (isVectorRed(image, center.x, center.y + 30)) {
+                    throw new IllegalStateException(
+                            "Velocity arrow leaked below the unit: the y-up flip was not applied");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying the vector display", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Vector display verification failed", exception.getCause());
+        }
+    }
+
+    private static boolean isVectorRed(BufferedImage image, int x, int y) {
+        // Sample a small window to tolerate anti-aliased strokes.
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dy = -3; dy <= 3; dy++) {
+                int sx = x + dx;
+                int sy = y + dy;
+                if (sx < 0 || sy < 0 || sx >= image.getWidth() || sy >= image.getHeight()) {
+                    continue;
+                }
+                Color pixel = new Color(image.getRGB(sx, sy), true);
+                if (pixel.getAlpha() > 120 && pixel.getRed() > 150
+                        && pixel.getGreen() < 110 && pixel.getBlue() < 110) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Frame-level policies need a real workbench; skip where no desktop
+     * session exists, since a JFrame cannot be constructed headless.
+     */
+    private static void verifyWorkbenchPolicies() {
+        if (GraphicsEnvironment.isHeadless()) {
+            return;
+        }
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulatorWorkbench workbench = new SimulatorWorkbench();
+                if (!workbench.verifyListFocusPolicy()) {
+                    throw new IllegalStateException(
+                            "Selection lists must stay unfocusable so Space keeps play/pause");
+                }
+                if (!workbench.verifyImportStaysInSpinnerRange()) {
+                    throw new IllegalStateException(
+                            "Imported values must stay inside the editor spinner ranges");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying workbench policies", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Workbench policy verification failed", exception.getCause());
+        }
     }
 
     private static void verifyExactSeek() {

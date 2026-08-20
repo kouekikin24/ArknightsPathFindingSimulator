@@ -746,7 +746,9 @@ public final class SimulationCanvas extends JComponent {
         int fromX = worldToCanvasX(origin.x());
         int fromY = worldToCanvasY(origin.y());
         int toX = Math.round(fromX + vector.x() * (float) zoom * scale);
-        int toY = Math.round(fromY + vector.y() * (float) zoom * scale);
+        // The display y grows upward, so a positive world-y component points
+        // toward smaller canvas y.
+        int toY = Math.round(fromY - vector.y() * (float) zoom * scale);
         canvas.setColor(color);
         canvas.setStroke(new BasicStroke(Math.max(1.5f, (float) (zoom * 0.045d)),
                 BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));

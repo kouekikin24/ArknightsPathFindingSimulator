@@ -103,10 +103,16 @@ public final class SimulatorWorkbench extends JFrame {
     private final JLabel operationStatus = new JLabel();
     private final JLabel sliderFrameValue = new JLabel("帧 0");
     private final JLabel sliderTimeValue = new JLabel("0 / 30 s");
-    private final JSpinner mapWidthSpinner = new JSpinner(new SpinnerNumberModel(12, 2, 64, 1));
-    private final JSpinner mapHeightSpinner = new JSpinner(new SpinnerNumberModel(8, 2, 64, 1));
+    // Bounds match the scenario format: dimensions span the codec's full
+    // range, speed any finite value of at least 0.1, so an imported scenario
+    // is never outside the editor's range (which would dead the step buttons
+    // and clamp on edit).
+    private final JSpinner mapWidthSpinner = new JSpinner(new SpinnerNumberModel(12,
+            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1));
+    private final JSpinner mapHeightSpinner = new JSpinner(new SpinnerNumberModel(8,
+            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1));
     private final JComboBox<UiMovementMode> movementModeBox = new JComboBox<>(UiMovementMode.values());
-    private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, 10.0d, 0.1d));
+    private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, (double) Float.MAX_VALUE, 0.1d));
     private final JCheckBox diagonalToggle = new JCheckBox("允许斜向连线", true);
     private final javax.swing.DefaultListModel<String> unitModel = new javax.swing.DefaultListModel<>();
     private final JList<String> unitList = new JList<>(unitModel);
@@ -150,6 +156,8 @@ public final class SimulatorWorkbench extends JFrame {
         diagonalToggle.setFocusable(false);
         bindToggle.setFocusable(false);
         addCheckpointButton.setFocusable(false);
+        unitList.setFocusable(false);
+        checkpointList.setFocusable(false);
         bindConfigurationControls();
         bindTimelineControls();
         bindKeyboardShortcuts();
@@ -836,6 +844,38 @@ public final class SimulatorWorkbench extends JFrame {
     /** Global bare-key shortcuts yield to text entry; modified shortcuts (Ctrl+Z/Y) always fire. */
     static boolean globalShortcutAllowed(Component focusOwner) {
         return !(focusOwner instanceof javax.swing.text.JTextComponent);
+    }
+
+    /** Verify hook: the selection lists must never hold keyboard focus, or Space stops play/pause. */
+    boolean verifyListFocusPolicy() {
+        return !unitList.isFocusable() && !checkpointList.isFocusable();
+    }
+
+    /**
+     * Verify hook: a scenario at the format's outer limits must leave every
+     * editor spinner inside its model range, otherwise its step buttons die.
+     */
+    boolean verifyImportStaysInSpinnerRange() {
+        session.importScenario("""
+                # arknights pathfinding scenario v3
+                map 100 100
+                unit 1
+                spawn 1 1
+                endpoint 50 50
+                movement GROUND
+                speed 20
+                diagonal true
+                """);
+        stopPlayback();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        return spinnerCanStep(speedSpinner)
+                && spinnerCanStep(mapWidthSpinner)
+                && spinnerCanStep(mapHeightSpinner);
+    }
+
+    private static boolean spinnerCanStep(JSpinner spinner) {
+        return spinner.getModel() instanceof SpinnerNumberModel model && model.getNextValue() != null;
     }
 
     private void togglePlayback() {
