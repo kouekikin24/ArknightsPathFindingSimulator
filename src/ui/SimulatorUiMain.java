@@ -1225,8 +1225,8 @@ public final class SimulatorUiMain {
 
     private static void verifyCheckpointRowFormat() {
         UiCheckpoint move = UiCheckpoint.move(new UiCell(3, 4));
-        String active = SimulatorWorkbench.formatCheckpointRow(1, move, true);
-        String idle = SimulatorWorkbench.formatCheckpointRow(1, move, false);
+        String active = UiFormat.checkpointRow(1, move, true);
+        String idle = UiFormat.checkpointRow(1, move, false);
         if (!active.startsWith("▶") || idle.startsWith("▶")
                 || !active.contains("移动") || !active.contains("(3.5, 4.5)")
                 || !idle.contains("02")) {

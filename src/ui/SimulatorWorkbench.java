@@ -1076,16 +1076,16 @@ public final class SimulatorWorkbench extends JFrame {
             }
             modeValue.setText(snapshot.unitMode() + (snapshot.bound() ? "，束缚" : ""));
             bindToggle.setSelected(session.bindStateForDisplay());
-            checkpointValue.setText(checkpointLabel(snapshot));
-            positionValue.setText(formatPoint(snapshot.entityPosition()));
-            velocityValue.setText(formatPoint(snapshot.inertiaVelocity()));
-            avoidanceValue.setText(formatPoint(snapshot.avoidance())
+            checkpointValue.setText(UiFormat.checkpointLabel(snapshot));
+            positionValue.setText(UiFormat.point(snapshot.entityPosition()));
+            velocityValue.setText(UiFormat.point(snapshot.inertiaVelocity()));
+            avoidanceValue.setText(UiFormat.point(snapshot.avoidance())
                     + (snapshot.avoidanceRecomputed() ? "  刷新" : ""));
-            targetValue.setText(formatPoint(snapshot.target()));
-            nextNodeValue.setText(formatCell(snapshot.nextNode()));
+            targetValue.setText(UiFormat.point(snapshot.target()));
+            nextNodeValue.setText(UiFormat.cell(snapshot.nextNode()));
             statusValue.setText(snapshot.transition().isBlank() ? "-" : snapshot.transition());
             // The simulation state channel: refresh() may always overwrite this.
-            footerStatus.setText(statusLabel(snapshot));
+            footerStatus.setText(UiFormat.statusLabel(snapshot));
             refreshUnitList();
             refreshCheckpointList(snapshot);
             refreshCheckpointControls();
@@ -1174,33 +1174,10 @@ public final class SimulatorWorkbench extends JFrame {
         checkpointModel.clear();
         for (int index = 0; index < snapshot.checkpoints().size(); index++) {
             UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
-            checkpointModel.addElement(formatCheckpointRow(index, checkpoint,
+            checkpointModel.addElement(UiFormat.checkpointRow(index, checkpoint,
                     index == snapshot.activeCheckpoint()));
         }
         // The user's selection is never touched: progress shows as the ▶ marker.
-    }
-
-    /** Row label: the active checkpoint carries a marker instead of stealing the selection. */
-    static String formatCheckpointRow(int index, UiCheckpoint checkpoint, boolean active) {
-        return String.format(Locale.ROOT, "%s%02d  %s %s",
-                active ? "▶ " : "　 ", index + 1, checkpoint.type().label(),
-                checkpointDetail(checkpoint)).strip();
-    }
-
-    private static String checkpointDetail(UiCheckpoint checkpoint) {
-        if (checkpoint.cell() != null) {
-            // A checkpoint is a point in the core: show the cell center, the
-            // same coordinate the marker and the route target actually use.
-            UiPoint center = checkpoint.cell().center();
-            return String.format(Locale.ROOT, "(%.1f, %.1f)", center.x(), center.y());
-        }
-        if (checkpoint.type().usesSeconds()) {
-            return String.format(Locale.ROOT, "%.1f s", checkpoint.value());
-        }
-        if (checkpoint.type().usesArea()) {
-            return checkpoint.area() + " 区";
-        }
-        return "";
     }
 
     private void refreshCheckpointControls() {
@@ -1216,32 +1193,6 @@ public final class SimulatorWorkbench extends JFrame {
             parameters.revalidate();
             parameters.repaint();
         }
-    }
-
-    private static String checkpointLabel(UiSnapshot snapshot) {
-        if (snapshot.completed()) {
-            return "已完成";
-        }
-        int count = snapshot.checkpoints().size();
-        return snapshot.activeCheckpoint() < count ? (snapshot.activeCheckpoint() + 1) + " / " + count : "终点";
-    }
-
-    private static String statusLabel(UiSnapshot snapshot) {
-        if (!snapshot.transition().isBlank()) {
-            return snapshot.transition();
-        }
-        if (snapshot.completed()) {
-            return "已到达终点";
-        }
-        return snapshot.avoidanceRecomputed() ? "避障已刷新" : "就绪";
-    }
-
-    private static String formatPoint(UiPoint point) {
-        return point == null ? "-" : String.format(Locale.ROOT, "%.4f, %.4f", point.x(), point.y());
-    }
-
-    private static String formatCell(UiCell cell) {
-        return cell == null ? "-" : cell.x() + ", " + cell.y();
     }
 
     private static JPanel verticalPanel() {
