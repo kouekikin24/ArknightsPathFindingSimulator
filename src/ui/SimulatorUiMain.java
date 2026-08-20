@@ -70,6 +70,7 @@ public final class SimulatorUiMain {
         verifyShortcutGuard();
         verifyRejectionFlash(after);
         verifyDisplayYUp();
+        verifyTerrainAlignment(after);
         System.out.println("UI session verification passed.");
     }
 
@@ -1196,6 +1197,66 @@ public final class SimulatorUiMain {
         } catch (InvocationTargetException exception) {
             throw new IllegalStateException("Y-axis display verification failed", exception.getCause());
         }
+    }
+
+    /**
+     * The painted terrain must line up with the continuous-coordinate markers:
+     * the WALL cell's logical center must show wall pixels, the row above it
+     * must stay open, and the row below must not carry the wall. Guards the
+     * cell-rectangle top edge against an off-by-one after the y-up flip.
+     */
+    private static void verifyTerrainAlignment(UiSnapshot snapshot) {
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(canvas.fitZoom());
+                canvas.setSize(canvas.getPreferredSize());
+                BufferedImage image = new BufferedImage(canvas.getWidth(), canvas.getHeight(),
+                        BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = image.createGraphics();
+                try {
+                    canvas.paint(graphics);
+                } finally {
+                    graphics.dispose();
+                }
+                // Demo terrain: WALL at (7,5), so its center is world (7.5, 5.5).
+                if (!isWallLike(image, canvas.canvasPointForWorld(7.5d, 5.5d))) {
+                    throw new IllegalStateException("Wall terrain not painted at its logical center");
+                }
+                if (isWallLike(image, canvas.canvasPointForWorld(7.5d, 4.5d))
+                        || isWallLike(image, canvas.canvasPointForWorld(7.5d, 6.5d))) {
+                    throw new IllegalStateException("Wall terrain leaked into an adjacent row");
+                }
+                if (!isOpenLike(image, canvas.canvasPointForWorld(7.5d, 6.5d))) {
+                    throw new IllegalStateException("Row above the wall is not open terrain");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying terrain alignment", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Terrain alignment verification failed", exception.getCause());
+        }
+    }
+
+    private static boolean isWallLike(BufferedImage image, Point p) {
+        if (p.x < 0 || p.y < 0 || p.x >= image.getWidth() || p.y >= image.getHeight()) {
+            return false;
+        }
+        int c = image.getRGB(p.x, p.y);
+        int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+        return r < 150 && g >= r && b >= r;
+    }
+
+    private static boolean isOpenLike(BufferedImage image, Point p) {
+        if (p.x < 0 || p.y < 0 || p.x >= image.getWidth() || p.y >= image.getHeight()) {
+            return false;
+        }
+        int c = image.getRGB(p.x, p.y);
+        int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+        return r > 200 && g > 200 && b > 200;
     }
 
     private static void verifyTrajectoryTooltip(SimulationCanvas canvas) {

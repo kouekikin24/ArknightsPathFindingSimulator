@@ -383,7 +383,9 @@ public final class SimulationCanvas extends JComponent {
         for (int y = 0; y < snapshot.height(); y++) {
             for (int x = 0; x < snapshot.width(); x++) {
                 int left = worldToCanvasX(x);
-                int top = worldToCanvasY(y);
+                // With the y-up display the cell's screen top edge is the world
+                // line y+1; worldToCanvasY(y) is its bottom edge.
+                int top = worldToCanvasY(y + 1d);
                 int size = worldLengthToPixels(1d);
                 UiTerrain terrain = snapshot.terrainAt(new UiCell(x, y));
                 canvas.setColor(terrainColor(terrain));
@@ -627,7 +629,7 @@ public final class SimulationCanvas extends JComponent {
         }
         UiCell nextNode = snapshot.nextNode();
         int left = worldToCanvasX(nextNode.x());
-        int top = worldToCanvasY(nextNode.y());
+        int top = worldToCanvasY(nextNode.y() + 1d);
         int size = worldLengthToPixels(1d);
         canvas.setColor(new Color(35, 93, 85));
         canvas.setStroke(new BasicStroke(Math.max(2f, (float) (zoom * 0.075d))));
@@ -695,7 +697,7 @@ public final class SimulationCanvas extends JComponent {
             return;
         }
         int left = worldToCanvasX(rejectionCell.x());
-        int top = worldToCanvasY(rejectionCell.y());
+        int top = worldToCanvasY(rejectionCell.y() + 1d);
         int size = worldLengthToPixels(1d);
         canvas.setColor(REJECTION);
         canvas.setStroke(new BasicStroke(Math.max(2f, (float) (zoom * 0.06d))));

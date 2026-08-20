@@ -4,3 +4,4 @@ out-ui/
 *.iml
 smoke-shots/
 smoke/*.class
+upstream-checkout/
