@@ -111,8 +111,11 @@ public final class SimulatorWorkbench extends JFrame {
     private final javax.swing.DefaultListModel<String> unitModel = new javax.swing.DefaultListModel<>();
     private final JList<String> unitList = new JList<>(unitModel);
     private final JComboBox<UiCheckpointType> checkpointTypeBox = new JComboBox<>(UiCheckpointType.values());
-    private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 3600.0d, 0.1d));
-    private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, 100, 1));
+    // Bounds match the scenario format: seconds is any non-negative finite
+    // float, area any non-negative int, so an imported value is never outside
+    // the editor's range (which would dead the step buttons and clamp on edit).
+    private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d));
+    private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1));
     private final JButton addCheckpointButton = new JButton("添加");
     private final JSpinner stunSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d)));
     private final JSpinner pushXSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));

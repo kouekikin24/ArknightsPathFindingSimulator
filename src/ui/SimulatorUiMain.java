@@ -1025,6 +1025,24 @@ public final class SimulatorUiMain {
                         + expected.getMessage());
             }
         }
+
+        // The format accepts any non-negative finite seconds and any non-negative
+        // area; the editor spinners' bounds must match so an imported value is
+        // never outside the editor's range.
+        SimulationSession big = new SimulationSession();
+        big.newScenario(6, 3);
+        big.addCheckpoint(UiCheckpoint.waitForSeconds(5000f));
+        big.addCheckpoint(UiCheckpoint.waitForBossRushArea(500));
+        String bigText = big.exportScenario();
+        if (!bigText.contains("WAIT_FOR_SECONDS 5000.0")
+                || !bigText.contains("WAIT_BOSSRUSH_WAVE 500")) {
+            throw new IllegalStateException("Large checkpoint parameters did not serialize: " + bigText);
+        }
+        SimulationSession reimport = new SimulationSession();
+        reimport.importScenario(bigText);
+        if (!reimport.exportScenario().equals(bigText)) {
+            throw new IllegalStateException("Large-parameter scenario did not round trip");
+        }
     }
 
     private static void verifyUnitSelectionSemantics() {
