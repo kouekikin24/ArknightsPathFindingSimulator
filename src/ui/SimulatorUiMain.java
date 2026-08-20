@@ -65,6 +65,10 @@ public final class SimulatorUiMain {
         verifyTraceCsvExport();
         verifyCheckpointArgumentValidation();
         verifyUnitSelectionSemantics();
+        verifyBindDisplayState();
+        verifyCheckpointRowFormat();
+        verifyShortcutGuard();
+        verifyRejectionFlash(after);
         System.out.println("UI session verification passed.");
     }
 
@@ -968,7 +972,7 @@ public final class SimulatorUiMain {
             new UiCheckpoint(UiCheckpointType.MOVE, new UiCell(1, 1), 5f, 0);
             throw new IllegalStateException("A MOVE checkpoint carrying seconds was accepted");
         } catch (IllegalArgumentException expected) {
-            if (!expected.getMessage().contains("seconds")) {
+            if (!expected.getMessage().contains("秒数")) {
                 throw new IllegalStateException("Misplaced-argument error was not reported");
             }
         }
@@ -976,7 +980,7 @@ public final class SimulatorUiMain {
             new UiCheckpoint(UiCheckpointType.DISAPPEAR, null, 0f, 3);
             throw new IllegalStateException("A DISAPPEAR checkpoint carrying an area was accepted");
         } catch (IllegalArgumentException expected) {
-            if (!expected.getMessage().contains("area")) {
+            if (!expected.getMessage().contains("区块")) {
                 throw new IllegalStateException("Misplaced-area error was not reported");
             }
         }
@@ -999,6 +1003,25 @@ public final class SimulatorUiMain {
         UiCheckpoint moved = UiCheckpointType.PATROL_MOVE.create(new UiCell(2, 2));
         if (!new UiCell(2, 2).equals(moved.cell())) {
             throw new IllegalStateException("Enum factory lost the cell argument");
+        }
+
+        // Point -> point-less conversion drops the cell; the reverse still fails.
+        SimulationSession conversion = new SimulationSession();
+        conversion.updateCheckpoint(0, UiCheckpointType.ALERT, 0f, 0);
+        String convertedText = conversion.exportScenario();
+        if (!convertedText.contains("checkpoint ALERT\n")
+                || convertedText.contains("checkpoint MOVE 5 1")) {
+            throw new IllegalStateException("Point-to-flag conversion did not drop the cell: "
+                    + convertedText);
+        }
+        try {
+            conversion.updateCheckpoint(0, UiCheckpointType.MOVE, 0f, 0);
+            throw new IllegalStateException("Flag-to-point conversion without a cell was accepted");
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().contains("地图坐标")) {
+                throw new IllegalStateException("Missing-cell error was not reported in Chinese: "
+                        + expected.getMessage());
+            }
         }
     }
 
@@ -1038,6 +1061,97 @@ public final class SimulatorUiMain {
         if (!"眩晕".equals(replayed.units().get(1).unitMode())
                 || !"移动".equals(replayed.units().get(0).unitMode())) {
             throw new IllegalStateException("Replay did not re-apply the stun to unit 1");
+        }
+    }
+
+    /**
+     * The bind toggle shows the scheduled intent, not just the current frame's
+     * state: a bind recorded for the next tick reads as on, a consumed bind
+     * reads as the actual state, and other units' events never leak in.
+     */
+    private static void verifyBindDisplayState() {
+        SimulationSession session = new SimulationSession();
+        if (session.bindStateForDisplay()) {
+            throw new IllegalStateException("A fresh session displayed a bind intent");
+        }
+        session.setUnitBound(true);
+        if (!session.bindStateForDisplay() || session.snapshot().bound()) {
+            throw new IllegalStateException("A scheduled bind was not visible before its tick");
+        }
+        session.tick();
+        if (!session.bindStateForDisplay() || !session.snapshot().bound()) {
+            throw new IllegalStateException("A consumed bind did not become the actual state");
+        }
+        session.setUnitBound(false);
+        if (session.bindStateForDisplay() || !session.snapshot().bound()) {
+            throw new IllegalStateException("A scheduled unbind was not visible before its tick");
+        }
+        session.seekFrame(0);
+        if (!session.bindStateForDisplay() || session.snapshot().bound()) {
+            throw new IllegalStateException("Seeking to the bind's frame must restore its intent display");
+        }
+
+        SimulationSession multi = new SimulationSession();
+        multi.newScenario(8, 3);
+        multi.addDraft();
+        multi.selectDraft(1);
+        multi.setUnitBound(true);
+        multi.selectDraft(0);
+        if (multi.bindStateForDisplay()) {
+            throw new IllegalStateException("Another unit's bind intent leaked into the display");
+        }
+    }
+
+    private static void verifyCheckpointRowFormat() {
+        UiCheckpoint move = UiCheckpoint.move(new UiCell(3, 4));
+        String active = SimulatorWorkbench.formatCheckpointRow(1, move, true);
+        String idle = SimulatorWorkbench.formatCheckpointRow(1, move, false);
+        if (!active.startsWith("▶") || idle.startsWith("▶")
+                || !active.contains("移动") || !active.contains("(3, 4)")
+                || !idle.contains("02")) {
+            throw new IllegalStateException("Checkpoint row lost its active marker or detail");
+        }
+    }
+
+    private static void verifyShortcutGuard() {
+        if (SimulatorWorkbench.globalShortcutAllowed(new javax.swing.JTextField())
+                || !SimulatorWorkbench.globalShortcutAllowed(null)
+                || !SimulatorWorkbench.globalShortcutAllowed(new javax.swing.JLabel())) {
+            throw new IllegalStateException("Global shortcut guard misclassified focus owners");
+        }
+    }
+
+    private static void verifyRejectionFlash(UiSnapshot snapshot) {
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(canvas.fitZoom());
+                canvas.setSize(canvas.getPreferredSize());
+                canvas.flashRejection(new UiCell(2, 2));
+                BufferedImage image = new BufferedImage(canvas.getWidth(), canvas.getHeight(),
+                        BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = image.createGraphics();
+                try {
+                    canvas.paint(graphics);
+                } finally {
+                    graphics.dispose();
+                }
+                boolean highlighted = false;
+                for (double worldX = 2.05d; worldX < 2.95d && !highlighted; worldX += 0.05d) {
+                    Point point = canvas.canvasPointForWorld(worldX, 2.0d);
+                    highlighted = isTrajectoryRed(image, point.x, point.y);
+                }
+                if (!highlighted) {
+                    throw new IllegalStateException("Rejection flash drew no highlight on the refused cell");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying the rejection flash", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Rejection flash verification failed", exception.getCause());
         }
     }
 

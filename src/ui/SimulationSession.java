@@ -227,10 +227,11 @@ public final class SimulationSession {
         List<UiCheckpoint> current = draft().checkpoints();
         UiCheckpoint previous = current.get(index);
         if (type.hasPoint() && previous.cell() == null) {
-            throw new IllegalArgumentException("Checkpoint " + index
-                    + " has no map cell to keep for " + type.label());
+            throw new IllegalArgumentException("检查点 " + (index + 1)
+                    + " 没有可保留的地图坐标，无法改为「" + type.label() + "」");
         }
-        UiCheckpoint updated = new UiCheckpoint(type, previous.cell(),
+        // Switching to a point-less type drops the cell instead of failing.
+        UiCheckpoint updated = new UiCheckpoint(type, type.hasPoint() ? previous.cell() : null,
                 type.usesSeconds() ? value : 0f, type.usesArea() ? area : 0);
         List<UiCheckpoint> next = new ArrayList<>(current);
         next.set(index, updated);
@@ -673,6 +674,25 @@ public final class SimulationSession {
     /** Records a bind or unbind on the selected unit starting with the next tick. */
     public synchronized void setUnitBound(boolean bound) {
         recordRunEvent(bound ? EventKind.BIND : EventKind.UNBIND, Vec2f.ZERO, 0f);
+    }
+
+    /**
+     * The bound state the UI should display for the selected unit: the actual
+     * state folded with bind events already scheduled at the current frame, so
+     * a scheduled-but-not-yet-applied bind reads as on instead of snapping back.
+     */
+    public synchronized boolean bindStateForDisplay() {
+        boolean bound = stage.simulator(selectedDraft).unit().bound();
+        for (RunEvent event : runEvents) {
+            if (event.unit() == selectedDraft && event.frame() == currentFrame()) {
+                if (event.kind() == EventKind.BIND) {
+                    bound = true;
+                } else if (event.kind() == EventKind.UNBIND) {
+                    bound = false;
+                }
+            }
+        }
+        return bound;
     }
 
     private void recordRunEvent(EventKind kind, Vec2f velocity, float seconds) {

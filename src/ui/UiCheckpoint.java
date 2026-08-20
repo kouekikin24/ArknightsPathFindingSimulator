@@ -6,20 +6,20 @@ public record UiCheckpoint(UiCheckpointType type, UiCell cell, float value, int 
     public UiCheckpoint {
         Objects.requireNonNull(type, "Checkpoint type is required");
         if (type.hasPoint() != (cell != null)) {
-            throw new IllegalArgumentException(
-                    type + (type.hasPoint() ? " requires a map cell" : " has no map cell"));
+            throw new IllegalArgumentException(type.label()
+                    + (type.hasPoint() ? " 需要地图坐标" : " 不接受地图坐标"));
         }
         if (!Float.isFinite(value) || value < 0f) {
-            throw new IllegalArgumentException("Checkpoint value must be finite and non-negative");
+            throw new IllegalArgumentException("检查点数值必须有限且非负");
         }
         if (area < 0) {
-            throw new IllegalArgumentException("Checkpoint area must be non-negative");
+            throw new IllegalArgumentException("检查点区块必须非负");
         }
         if (value != 0f && !type.usesSeconds()) {
-            throw new IllegalArgumentException(type + " does not use a seconds value");
+            throw new IllegalArgumentException(type.label() + " 不接受秒数参数");
         }
         if (area != 0 && !type.usesArea()) {
-            throw new IllegalArgumentException(type + " does not use an area value");
+            throw new IllegalArgumentException(type.label() + " 不接受区块参数");
         }
     }
 

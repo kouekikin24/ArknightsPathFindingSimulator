@@ -99,6 +99,8 @@ public final class SimulatorWorkbench extends JFrame {
     private final JLabel nextNodeValue = valueLabel();
     private final JLabel statusValue = valueLabel();
     private final JLabel footerStatus = new JLabel();
+    /** Persistent user-action feedback; frame refreshes never overwrite this channel. */
+    private final JLabel operationStatus = new JLabel();
     private final JLabel sliderFrameValue = new JLabel("帧 0");
     private final JLabel sliderTimeValue = new JLabel("0 / 30 s");
     private final JSpinner mapWidthSpinner = new JSpinner(new SpinnerNumberModel(12, 2, 64, 1));
@@ -136,6 +138,15 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setShowPath(false);
         canvas.setZoomChangeListener(this::refreshZoomLabel);
         canvas.setViewportSize(mapScrollPane.getViewport().getWidth(), mapScrollPane.getViewport().getHeight());
+        // Space belongs to play/pause: no non-input control may hold keyboard focus.
+        playbackRate.setFocusable(false);
+        showPathToggle.setFocusable(false);
+        showTrajectoryToggle.setFocusable(false);
+        movementModeBox.setFocusable(false);
+        checkpointTypeBox.setFocusable(false);
+        diagonalToggle.setFocusable(false);
+        bindToggle.setFocusable(false);
+        addCheckpointButton.setFocusable(false);
         bindConfigurationControls();
         bindTimelineControls();
         bindKeyboardShortcuts();
@@ -249,6 +260,7 @@ public final class SimulatorWorkbench extends JFrame {
         timeInput.setToolTipText("输入帧号、n/30 或可精确换算为帧的秒数");
         labels.add(timeInput);
         JButton seek = new JButton("定位");
+        seek.setFocusable(false);
         seek.setToolTipText("跳转到精确帧");
         seek.addActionListener(event -> seekFromInput());
         labels.add(seek);
@@ -257,9 +269,15 @@ public final class SimulatorWorkbench extends JFrame {
         timelineSlider.setFocusable(true);
         timelineSlider.setToolTipText("时间轴单位为帧");
         panel.add(timelineSlider, BorderLayout.CENTER);
+        JPanel statusRow = new JPanel(new BorderLayout(8, 0));
+        statusRow.setOpaque(false);
+        operationStatus.setForeground(VALUE);
+        operationStatus.setBorder(new EmptyBorder(2, 6, 2, 6));
         footerStatus.setForeground(LABEL_TEXT);
         footerStatus.setBorder(new EmptyBorder(2, 6, 2, 6));
-        panel.add(footerStatus, BorderLayout.SOUTH);
+        statusRow.add(operationStatus, BorderLayout.CENTER);
+        statusRow.add(footerStatus, BorderLayout.EAST);
+        panel.add(statusRow, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -311,11 +329,13 @@ public final class SimulatorWorkbench extends JFrame {
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         actions.setOpaque(false);
         JButton fresh = new JButton("新建");
+        fresh.setFocusable(false);
         fresh.addActionListener(event -> {
             runEdit(() -> session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner)));
             requestMapFit();
         });
         JButton demo = new JButton("示例");
+        demo.setFocusable(false);
         demo.addActionListener(event -> {
             runEdit(session::loadDemoScenario);
             requestMapFit();
@@ -339,10 +359,12 @@ public final class SimulatorWorkbench extends JFrame {
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         actions.setOpaque(false);
         JButton add = new JButton("添加");
+        add.setFocusable(false);
         add.setToolTipText("复制当前路线为新单位");
         add.addActionListener(event -> runEdit(session::addDraft));
         actions.add(add);
         JButton remove = new JButton("删除");
+        remove.setFocusable(false);
         remove.setToolTipText("删除选中的单位（至少保留一个）");
         remove.addActionListener(event -> {
             int index = unitList.getSelectedIndex();
@@ -352,7 +374,7 @@ public final class SimulatorWorkbench extends JFrame {
             try {
                 runEdit(() -> session.removeDraft(index));
             } catch (IllegalArgumentException error) {
-                footerStatus.setText("无法删除：" + error.getMessage());
+                operationStatus.setText("无法删除：" + error.getMessage());
             }
         });
         actions.add(remove);
@@ -421,27 +443,32 @@ public final class SimulatorWorkbench extends JFrame {
 
         JButton stunButton = new JButton("注入");
         stunButton.setToolTipText("下一帧起眩晕指定秒数");
+        stunButton.setFocusable(false);
         stunButton.addActionListener(event -> {
             try {
                 session.applyStun(floatValue(stunSecondsSpinner));
-                footerStatus.setText("已安排：下一帧起眩晕 " + floatValue(stunSecondsSpinner) + " 秒");
+                operationStatus.setText("已安排：下一帧起眩晕 " + floatValue(stunSecondsSpinner) + " 秒");
+                // Refresh immediately so the slider max tracks a truncated timeline.
+                refresh(session.snapshotFrame());
             } catch (RuntimeException error) {
-                footerStatus.setText("无法眩晕：" + error.getMessage());
+                operationStatus.setText("无法眩晕：" + error.getMessage());
             }
         });
         addCombatRow(section, 0, "眩晕", stunSecondsSpinner, new JLabel("秒"), stunButton);
 
         JButton pushButton = new JButton("注入");
         pushButton.setToolTipText("下一帧起以给定速度(格/秒)推动指定秒数");
+        pushButton.setFocusable(false);
         pushButton.addActionListener(event -> {
             try {
                 session.applyDisplacement(floatValue(pushXSpinner), floatValue(pushYSpinner),
                         floatValue(pushSecondsSpinner));
-                footerStatus.setText("已安排：下一帧起击退 ("
+                operationStatus.setText("已安排：下一帧起击退 ("
                         + floatValue(pushXSpinner) + ", " + floatValue(pushYSpinner) + ") 持续 "
                         + floatValue(pushSecondsSpinner) + " 秒");
+                refresh(session.snapshotFrame());
             } catch (RuntimeException error) {
-                footerStatus.setText("无法击退：" + error.getMessage());
+                operationStatus.setText("无法击退：" + error.getMessage());
             }
         });
         addCombatRow(section, 1, "击退", pushXSpinner, pushYSpinner, pushSecondsSpinner,
@@ -454,11 +481,14 @@ public final class SimulatorWorkbench extends JFrame {
             }
             try {
                 session.setUnitBound(bindToggle.isSelected());
-                footerStatus.setText(bindToggle.isSelected()
+                operationStatus.setText(bindToggle.isSelected()
                         ? "已安排：下一帧起束缚" : "已安排：下一帧起解除束缚");
             } catch (RuntimeException error) {
-                footerStatus.setText("无法束缚：" + error.getMessage());
+                operationStatus.setText("无法束缚：" + error.getMessage());
             }
+            // The toggle follows the session's display state: a scheduled intent
+            // stays pressed; a rejected injection rolls the toggle back.
+            refresh(session.snapshotFrame());
         });
         addCombatRow(section, 2, "束缚", bindToggle);
         return section;
@@ -532,6 +562,7 @@ public final class SimulatorWorkbench extends JFrame {
         addCheckpointButton.addActionListener(event -> addCheckpointFromPanel());
         actions.add(addCheckpointButton);
         JButton update = new JButton("更新");
+        update.setFocusable(false);
         update.setToolTipText("把选中的检查点改为当前类型和参数");
         update.addActionListener(event -> updateSelectedCheckpoint());
         actions.add(update);
@@ -550,7 +581,7 @@ public final class SimulatorWorkbench extends JFrame {
             try {
                 runEdit(() -> session.removeCheckpoint(index));
             } catch (IllegalArgumentException error) {
-                footerStatus.setText("无法删除：" + error.getMessage());
+                operationStatus.setText("无法删除：" + error.getMessage());
             }
         });
         actions.add(remove);
@@ -559,7 +590,7 @@ public final class SimulatorWorkbench extends JFrame {
             try {
                 runEdit(session::clearCheckpoints);
             } catch (IllegalArgumentException error) {
-                footerStatus.setText("无法清空：" + error.getMessage());
+                operationStatus.setText("无法清空：" + error.getMessage());
             }
         });
         actions.add(clear);
@@ -593,6 +624,8 @@ public final class SimulatorWorkbench extends JFrame {
             if (refreshing) {
                 return;
             }
+            // Scrubbing pauses playback, matching the typed-time seek path.
+            stopPlayback();
             int target = timelineSlider.getValue();
             showTimelineSelection(target);
             if (!timelineSlider.getValueIsAdjusting()) {
@@ -620,7 +653,8 @@ public final class SimulatorWorkbench extends JFrame {
             case BROWSE -> null;
         };
         if (error != null) {
-            footerStatus.setText(error);
+            canvas.flashRejection(cell);
+            operationStatus.setText(error);
             return;
         }
         stopPlayback();
@@ -657,7 +691,7 @@ public final class SimulatorWorkbench extends JFrame {
     private void addCheckpointFromPanel() {
         UiCheckpointType type = selectedCheckpointType();
         if (type.hasPoint()) {
-            footerStatus.setText("坐标类检查点请在地图上用 + 工具放置");
+            operationStatus.setText("坐标类检查点请在地图上用 + 工具放置");
             return;
         }
         int index = checkpointList.getSelectedIndex();
@@ -668,7 +702,7 @@ public final class SimulatorWorkbench extends JFrame {
                 runEdit(() -> session.addCheckpoint(newCheckpointOfType(type, null)));
             }
         } catch (IllegalArgumentException error) {
-            footerStatus.setText("无法添加：" + error.getMessage());
+            operationStatus.setText("无法添加：" + error.getMessage());
             return;
         }
         checkpointList.setSelectedIndex(index >= 0 ? index : checkpointModel.size() - 1);
@@ -677,14 +711,14 @@ public final class SimulatorWorkbench extends JFrame {
     private void updateSelectedCheckpoint() {
         int index = checkpointList.getSelectedIndex();
         if (index < 0) {
-            footerStatus.setText("请先在列表中选择一个检查点");
+            operationStatus.setText("请先在列表中选择一个检查点");
             return;
         }
         try {
             runEdit(() -> session.updateCheckpoint(index, selectedCheckpointType(),
                     floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner)));
         } catch (IllegalArgumentException error) {
-            footerStatus.setText("无法更新：" + error.getMessage());
+            operationStatus.setText("无法更新：" + error.getMessage());
             return;
         }
         checkpointList.setSelectedIndex(index);
@@ -698,7 +732,7 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             runEdit(() -> session.moveCheckpoint(index, offset));
         } catch (IllegalArgumentException error) {
-            footerStatus.setText("无法移动：" + error.getMessage());
+            operationStatus.setText("无法移动：" + error.getMessage());
             return;
         }
         checkpointList.setSelectedIndex(Math.max(0, Math.min(checkpointModel.size() - 1, index + offset)));
@@ -707,7 +741,7 @@ public final class SimulatorWorkbench extends JFrame {
     private void stepOneFrame() {
         stopPlayback();
         if (!session.canTick()) {
-            footerStatus.setText("模拟已到达终态");
+            operationStatus.setText("模拟已到达终态");
             return;
         }
         invalidateSeek();
@@ -737,14 +771,14 @@ public final class SimulatorWorkbench extends JFrame {
         int heightBefore = session.mapHeight();
         boolean applied = isUndo ? session.undo() : session.redo();
         if (!applied) {
-            footerStatus.setText(isUndo ? "没有可撤销的操作" : "没有可重做的操作");
+            operationStatus.setText(isUndo ? "没有可撤销的操作" : "没有可重做的操作");
             return;
         }
         refresh(session.snapshotFrame());
         if (session.mapWidth() != widthBefore || session.mapHeight() != heightBefore) {
             requestMapFit();
         }
-        footerStatus.setText(isUndo ? "已撤销" : "已重做");
+        operationStatus.setText(isUndo ? "已撤销" : "已重做");
     }
 
     private void bindKeyboardShortcuts() {
@@ -766,13 +800,29 @@ public final class SimulatorWorkbench extends JFrame {
         actions.put(name, new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent event) {
+                // Bare keys (SPACE/N/R) must not fire while the user is typing.
+                if (stroke.getModifiers() == 0 && !globalShortcutAllowed(
+                        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                                .getFocusOwner())) {
+                    return;
+                }
                 action.run();
             }
         });
     }
 
+    /** Global bare-key shortcuts yield to text entry; modified shortcuts (Ctrl+Z/Y) always fire. */
+    static boolean globalShortcutAllowed(Component focusOwner) {
+        return !(focusOwner instanceof javax.swing.text.JTextComponent);
+    }
+
     private void togglePlayback() {
         if (!playButton.isSelected()) {
+            stopPlayback();
+            return;
+        }
+        if (!session.canTick()) {
+            operationStatus.setText("模拟已到达终态");
             stopPlayback();
             return;
         }
@@ -819,7 +869,7 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             frame = SimulationSession.parseTimeToFrame(timeInput.getText());
         } catch (IllegalArgumentException error) {
-            footerStatus.setText(error.getMessage());
+            operationStatus.setText(error.getMessage());
             timeInput.selectAll();
             return;
         }
@@ -845,10 +895,10 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             Files.writeString(target, content, StandardCharsets.UTF_8);
         } catch (IOException error) {
-            footerStatus.setText("导出失败：" + error.getMessage());
+            operationStatus.setText("导出失败：" + error.getMessage());
             return;
         }
-        footerStatus.setText(successLabel + "：" + target.getFileName());
+        operationStatus.setText(successLabel + "：" + target.getFileName());
     }
 
     private void importScenarioFile() {
@@ -860,24 +910,26 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             text = Files.readString(chooser.getSelectedFile().toPath(), StandardCharsets.UTF_8);
         } catch (IOException error) {
-            footerStatus.setText("导入失败：" + error.getMessage());
+            operationStatus.setText("导入失败：" + error.getMessage());
             return;
         }
         try {
             session.importScenario(text);
         } catch (IllegalArgumentException error) {
-            footerStatus.setText("导入失败：" + error.getMessage());
+            operationStatus.setText("导入失败：" + error.getMessage());
             return;
         }
         stopPlayback();
         invalidateSeek();
         refresh(session.snapshotFrame());
         requestMapFit();
+        operationStatus.setText("场景已导入：" + chooser.getSelectedFile().getName());
     }
 
     private void requestSeek(long frame) {
         if (frame < 0L || frame > Integer.MAX_VALUE - 1L) {
-            footerStatus.setText("帧号超出范围");
+            operationStatus.setText("帧号超出范围");
+            refresh(session.snapshotFrame());
             return;
         }
         long request = seekRequest.incrementAndGet();
@@ -900,7 +952,8 @@ public final class SimulatorWorkbench extends JFrame {
                 }
                 SwingUtilities.invokeLater(() -> {
                     if (request == seekRequest.get()) {
-                        footerStatus.setText(error.getMessage());
+                        operationStatus.setText(error.getMessage());
+                        refresh(session.snapshotFrame());
                     }
                 });
             }
@@ -960,7 +1013,7 @@ public final class SimulatorWorkbench extends JFrame {
                 timeInput.setText(Long.toString(snapshot.frame()));
             }
             modeValue.setText(snapshot.unitMode() + (snapshot.bound() ? "，束缚" : ""));
-            bindToggle.setSelected(snapshot.bound());
+            bindToggle.setSelected(session.bindStateForDisplay());
             checkpointValue.setText(checkpointLabel(snapshot));
             positionValue.setText(formatPoint(snapshot.entityPosition()));
             velocityValue.setText(formatPoint(snapshot.inertiaVelocity()));
@@ -969,6 +1022,7 @@ public final class SimulatorWorkbench extends JFrame {
             targetValue.setText(formatPoint(snapshot.target()));
             nextNodeValue.setText(formatCell(snapshot.nextNode()));
             statusValue.setText(snapshot.transition().isBlank() ? "-" : snapshot.transition());
+            // The simulation state channel: refresh() may always overwrite this.
             footerStatus.setText(statusLabel(snapshot));
             refreshUnitList();
             refreshCheckpointList(snapshot);
@@ -1058,12 +1112,17 @@ public final class SimulatorWorkbench extends JFrame {
         checkpointModel.clear();
         for (int index = 0; index < snapshot.checkpoints().size(); index++) {
             UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
-            checkpointModel.addElement(String.format(Locale.ROOT, "%02d  %s %s",
-                    index + 1, checkpoint.type().label(), checkpointDetail(checkpoint)).strip());
+            checkpointModel.addElement(formatCheckpointRow(index, checkpoint,
+                    index == snapshot.activeCheckpoint()));
         }
-        if (snapshot.activeCheckpoint() >= 0 && snapshot.activeCheckpoint() < checkpointModel.size()) {
-            checkpointList.setSelectedIndex(snapshot.activeCheckpoint());
-        }
+        // The user's selection is never touched: progress shows as the ▶ marker.
+    }
+
+    /** Row label: the active checkpoint carries a marker instead of stealing the selection. */
+    static String formatCheckpointRow(int index, UiCheckpoint checkpoint, boolean active) {
+        return String.format(Locale.ROOT, "%s%02d  %s %s",
+                active ? "▶ " : "　 ", index + 1, checkpoint.type().label(),
+                checkpointDetail(checkpoint)).strip();
     }
 
     private static String checkpointDetail(UiCheckpoint checkpoint) {

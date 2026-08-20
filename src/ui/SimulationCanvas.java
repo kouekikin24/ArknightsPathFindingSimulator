@@ -39,6 +39,8 @@ public final class SimulationCanvas extends JComponent {
     private static final double TRAJECTORY_HIT_RADIUS = 30d;
     private static final int HOVER_INVALIDATION_WIDTH = 520;
     private static final int HOVER_INVALIDATION_HEIGHT = 140;
+    private static final long REJECTION_FLASH_MILLIS = 400L;
+    private static final Color REJECTION = new Color(214, 48, 44);
     private static final Color ENTITY = new Color(222, 89, 64);
     private static final Color CURSOR = new Color(38, 50, 45);
     private static final Color SPAWN = new Color(43, 137, 91);
@@ -58,6 +60,8 @@ public final class SimulationCanvas extends JComponent {
     private Point hoverPosition;
     private UiSnapshot hoverSample;
     private int hoverUnit;
+    private UiCell rejectionCell;
+    private long rejectionDeadline;
     private double zoom = 1d;
     private int viewportWidth = 1;
     private int viewportHeight = 1;
@@ -192,6 +196,19 @@ public final class SimulationCanvas extends JComponent {
         mapPanStart = null;
         mapPanViewStart = null;
         setCursor(Cursor.getPredefinedCursor(value ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+    }
+
+    /** Flashes a refused edit target so a rejected placement is visible, not silent. */
+    public void flashRejection(UiCell cell) {
+        rejectionCell = cell;
+        rejectionDeadline = System.currentTimeMillis() + REJECTION_FLASH_MILLIS;
+        repaint();
+        javax.swing.Timer timer = new javax.swing.Timer((int) REJECTION_FLASH_MILLIS, event -> {
+            rejectionCell = null;
+            repaint();
+        });
+        timer.setRepeats(false);
+        timer.start();
     }
 
     /** Called on the EDT after this canvas accepts a new camera zoom. */
@@ -352,6 +369,7 @@ public final class SimulationCanvas extends JComponent {
             }
             drawMarkers(canvas);
             drawUnit(canvas);
+            drawRejectionFlash(canvas);
             drawHoverSampleMarker(canvas);
             drawHoverPosition(canvas);
         } finally {
@@ -663,6 +681,23 @@ public final class SimulationCanvas extends JComponent {
             canvas.setFont(new Font(Font.SANS_SERIF, Font.BOLD, Math.max(10, radius)));
             drawCenteredText(canvas, text, x, y);
         }
+    }
+
+    /** Outlines the cell whose edit was just refused until the flash deadline passes. */
+    private void drawRejectionFlash(Graphics2D canvas) {
+        if (rejectionCell == null) {
+            return;
+        }
+        if (System.currentTimeMillis() > rejectionDeadline) {
+            rejectionCell = null;
+            return;
+        }
+        int left = worldToCanvasX(rejectionCell.x());
+        int top = worldToCanvasY(rejectionCell.y());
+        int size = worldLengthToPixels(1d);
+        canvas.setColor(REJECTION);
+        canvas.setStroke(new BasicStroke(Math.max(2f, (float) (zoom * 0.06d))));
+        canvas.drawRoundRect(left + 1, top + 1, size - 2, size - 2, 6, 6);
     }
 
     private void drawUnit(Graphics2D canvas) {
