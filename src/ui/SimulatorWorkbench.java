@@ -297,11 +297,11 @@ public final class SimulatorWorkbench extends JFrame {
         content.add(Box.createVerticalStrut(8));
         content.add(createToolSection());
         content.add(Box.createVerticalStrut(8));
-        content.add(createRuntimeSection());
-        content.add(Box.createVerticalStrut(8));
         content.add(createCombatSection());
         content.add(Box.createVerticalStrut(8));
         content.add(createCheckpointSection());
+        content.add(Box.createVerticalStrut(8));
+        content.add(createRuntimeSection());
         JScrollPane scroll = new JScrollPane(content, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.setPreferredSize(new Dimension(280, 0));
@@ -558,6 +558,21 @@ public final class SimulatorWorkbench extends JFrame {
 
         checkpointList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         checkpointList.setVisibleRowCount(5);
+        // Selecting a checkpoint echoes its type and parameters into the panel,
+        // so 更新 never overwrites with stale spinner values.
+        checkpointList.addListSelectionListener(event -> {
+            if (refreshing || event.getValueIsAdjusting()) {
+                return;
+            }
+            int index = checkpointList.getSelectedIndex();
+            if (index < 0 || index >= checkpointModel.size()) {
+                return;
+            }
+            UiCheckpoint selected = session.snapshot().checkpoints().get(index);
+            checkpointTypeBox.setSelectedItem(selected.type());
+            checkpointSecondsSpinner.setValue((double) selected.value());
+            checkpointAreaSpinner.setValue(selected.area());
+        });
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new GridLayout(2, 3, 4, 4));

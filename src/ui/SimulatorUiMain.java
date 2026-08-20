@@ -1141,6 +1141,7 @@ public final class SimulatorUiMain {
                 }
                 boolean highlighted = false;
                 for (double worldX = 2.05d; worldX < 2.95d && !highlighted; worldX += 0.05d) {
+                    // Cell (2,2) spans world y [2,3]; its screen-bottom edge is y=2.
                     Point point = canvas.canvasPointForWorld(worldX, 2.0d);
                     highlighted = isTrajectoryRed(image, point.x, point.y);
                 }
