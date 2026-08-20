@@ -124,9 +124,9 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner checkpointAreaSpinner = cappedEditor(
             new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5);
     private final JSpinner checkpointXSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0, 0, ScenarioCodec.MAXIMUM_DIMENSION - 1, 1)), 3);
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.5d, ScenarioCodec.MAXIMUM_DIMENSION - 0.5d, 1.0d)), 4);
     private final JSpinner checkpointYSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0, 0, ScenarioCodec.MAXIMUM_DIMENSION - 1, 1)), 3);
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.5d, ScenarioCodec.MAXIMUM_DIMENSION - 0.5d, 1.0d)), 4);
     private JLabel checkpointCoordLabel;
     private JPanel checkpointCoordPanel;
     private final JButton addCheckpointButton = new JButton("添加");
@@ -336,9 +336,9 @@ public final class SimulatorWorkbench extends JFrame {
         content.add(Box.createVerticalStrut(8));
         content.add(createToolSection());
         content.add(Box.createVerticalStrut(8));
-        content.add(createCombatSection());
-        content.add(Box.createVerticalStrut(8));
         content.add(createCheckpointSection());
+        content.add(Box.createVerticalStrut(8));
+        content.add(createCombatSection());
         content.add(Box.createVerticalStrut(8));
         content.add(createRuntimeSection());
         JScrollPane scroll = new JScrollPane(content, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
@@ -628,8 +628,8 @@ public final class SimulatorWorkbench extends JFrame {
             checkpointSecondsSpinner.setValue((double) selected.value());
             checkpointAreaSpinner.setValue(selected.area());
             if (selected.cell() != null) {
-                checkpointXSpinner.setValue(selected.cell().x());
-                checkpointYSpinner.setValue(selected.cell().y());
+                checkpointXSpinner.setValue((double) selected.cell().center().x());
+                checkpointYSpinner.setValue((double) selected.cell().center().y());
             }
         });
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
@@ -795,7 +795,7 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             UiCheckpointType type = selectedCheckpointType();
             UiCell cell = type.hasPoint()
-                    ? new UiCell(intValue(checkpointXSpinner), intValue(checkpointYSpinner))
+                    ? new UiCell(cellCoord(checkpointXSpinner), cellCoord(checkpointYSpinner))
                     : null;
             runEdit(() -> session.updateCheckpoint(index, type, cell,
                     floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner)));
@@ -1315,6 +1315,11 @@ public final class SimulatorWorkbench extends JFrame {
 
     private static int intValue(JSpinner spinner) {
         return ((Number) spinner.getValue()).intValue();
+    }
+
+    /** The coordinate spinners edit the center point; the owned cell is its floor. */
+    private static int cellCoord(JSpinner spinner) {
+        return (int) Math.floor(((Number) spinner.getValue()).doubleValue());
     }
 
     private static float floatValue(JSpinner spinner) {
