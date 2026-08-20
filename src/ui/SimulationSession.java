@@ -184,6 +184,7 @@ public final class SimulationSession {
 
     public synchronized void placeSpawn(UiCell cell) {
         requireInside(cell);
+        requireNotOnEndpointOrCheckpoint(cell, "起点");
         pushUndo();
         updateDraft(draft().withSpawn(cell));
         ensureOpen(cell);
@@ -192,10 +193,34 @@ public final class SimulationSession {
 
     public synchronized void placeEndpoint(UiCell cell) {
         requireInside(cell);
+        requireNotOnSpawnOrCheckpoint(cell, "终点");
         pushUndo();
         updateDraft(draft().withEndpoint(cell));
         ensureOpen(cell);
         rebuildSimulator();
+    }
+
+    private void requireNotOnEndpointOrCheckpoint(UiCell cell, String what) {
+        if (cell.equals(draft().endpoint())) {
+            throw new IllegalArgumentException(what + "不能与终点同格");
+        }
+        requireNotOnCheckpoint(cell, what);
+    }
+
+    private void requireNotOnSpawnOrCheckpoint(UiCell cell, String what) {
+        if (cell.equals(draft().spawn())) {
+            throw new IllegalArgumentException(what + "不能与起点同格");
+        }
+        requireNotOnCheckpoint(cell, what);
+    }
+
+    private void requireNotOnCheckpoint(UiCell cell, String what) {
+        for (UiCheckpoint checkpoint : draft().checkpoints()) {
+            if (cell.equals(checkpoint.cell())) {
+                throw new IllegalArgumentException(
+                        what + "不能与检查点同格 (" + cell.x() + ", " + cell.y() + ")");
+            }
+        }
     }
 
     // ----- checkpoint editing ------------------------------------------------
@@ -280,10 +305,15 @@ public final class SimulationSession {
      * performs, so an invalid edit is rejected without touching the scenario.
      */
     private void commitCheckpoints(List<UiCheckpoint> next) {
+        UnitDraft current = draft();
         for (int index = 0; index < next.size(); index++) {
             UiCell cell = next.get(index).cell();
             if (cell == null) {
                 continue;
+            }
+            if (cell.equals(current.spawn()) || cell.equals(current.endpoint())) {
+                throw new IllegalArgumentException(
+                        "检查点不能与起点/终点同格 (" + cell.x() + ", " + cell.y() + ")");
             }
             for (int other = index + 1; other < next.size(); other++) {
                 if (cell.equals(next.get(other).cell())) {
@@ -292,7 +322,6 @@ public final class SimulationSession {
                 }
             }
         }
-        UnitDraft current = draft();
         probeRoute(current.spawn(), current.endpoint(), next, current.movementMode(),
                 current.allowDiagonalMove());
         pushUndo();

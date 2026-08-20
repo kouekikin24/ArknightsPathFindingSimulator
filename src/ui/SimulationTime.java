@@ -23,7 +23,7 @@ public final class SimulationTime {
         if (input == null) {
             throw new IllegalArgumentException("Time is required");
         }
-        String text = input.strip();
+        String text = normalize(input.strip());
         if (text.isEmpty()) {
             throw new IllegalArgumentException("Time is required");
         }
@@ -69,6 +69,24 @@ public final class SimulationTime {
             throw new IllegalArgumentException("Frame must be non-negative");
         }
         return frame + " / " + FPS + " s";
+    }
+
+    /** Maps full-width digits and separators typed by a Chinese IME to ASCII. */
+    private static String normalize(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '０' && c <= '９') {
+                out.append((char) ('0' + (c - '０')));
+            } else if (c == '／') {
+                out.append('/');
+            } else if (c == '．') {
+                out.append('.');
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     private static long toLong(BigInteger value, String message) {

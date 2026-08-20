@@ -63,6 +63,7 @@ public final class SimulatorUiMain {
         verifyTerminalFlagAndTerrainRejection();
         verifyScenarioRoundTrip();
         verifyCheckpointEditing();
+        verifyRoutePointOverlap();
         verifyCombatStateInjection();
         verifyInjectionBelowFrontier();
         verifyInjectionEditSeekOrdering();
@@ -200,11 +201,35 @@ public final class SimulatorUiMain {
         }
     }
 
+    private static void verifyRoutePointOverlap() {
+        SimulationSession session = new SimulationSession(); // demo: spawn(1,1) endpoint(10,6) checkpoints(5,1)(5,5)
+        expectRejection(() -> session.placeSpawn(new UiCell(10, 6)), "spawn on endpoint");
+        expectRejection(() -> session.placeSpawn(new UiCell(5, 1)), "spawn on checkpoint");
+        expectRejection(() -> session.placeEndpoint(new UiCell(1, 1)), "endpoint on spawn");
+        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiCell(1, 1))), "checkpoint on spawn");
+        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiCell(10, 6))), "checkpoint on endpoint");
+        // A free cell is still accepted.
+        session.addCheckpoint(UiCheckpoint.move(new UiCell(2, 2)));
+    }
+
+    private static void expectRejection(Runnable action, String what) {
+        try {
+            action.run();
+        } catch (IllegalArgumentException expected) {
+            return;
+        }
+        throw new IllegalStateException("Route-point overlap was not rejected: " + what);
+    }
+
     private static void verifyTimeParsing() {
         if (SimulationSession.parseTimeToFrame("16") != 16
                 || SimulationSession.parseTimeToFrame("16/30") != 16
                 || SimulationSession.parseTimeToFrame("0.5") != 15
-                || SimulationSession.parseTimeToFrame("1.2") != 36) {
+                || SimulationSession.parseTimeToFrame("1.2") != 36
+                // Full-width digits/separators from a Chinese IME normalize to ASCII.
+                || SimulationSession.parseTimeToFrame("１６") != 16
+                || SimulationSession.parseTimeToFrame("１６／３０") != 16
+                || SimulationSession.parseTimeToFrame("０．５") != 15) {
             throw new IllegalStateException("Exact time parsing returned an incorrect frame");
         }
         try {
