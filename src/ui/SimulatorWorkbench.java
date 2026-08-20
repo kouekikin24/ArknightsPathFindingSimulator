@@ -1146,8 +1146,10 @@ public final class SimulatorWorkbench extends JFrame {
 
     private static String checkpointDetail(UiCheckpoint checkpoint) {
         if (checkpoint.cell() != null) {
-            return String.format(Locale.ROOT, "(%d, %d)",
-                    checkpoint.cell().x(), checkpoint.cell().y());
+            // A checkpoint is a point in the core: show the cell center, the
+            // same coordinate the marker and the route target actually use.
+            UiPoint center = checkpoint.cell().center();
+            return String.format(Locale.ROOT, "(%.1f, %.1f)", center.x(), center.y());
         }
         if (checkpoint.type().usesSeconds()) {
             return String.format(Locale.ROOT, "%.1f s", checkpoint.value());

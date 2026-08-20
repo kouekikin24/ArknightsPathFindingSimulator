@@ -1109,7 +1109,7 @@ public final class SimulatorUiMain {
         String active = SimulatorWorkbench.formatCheckpointRow(1, move, true);
         String idle = SimulatorWorkbench.formatCheckpointRow(1, move, false);
         if (!active.startsWith("▶") || idle.startsWith("▶")
-                || !active.contains("移动") || !active.contains("(3, 4)")
+                || !active.contains("移动") || !active.contains("(3.5, 4.5)")
                 || !idle.contains("02")) {
             throw new IllegalStateException("Checkpoint row lost its active marker or detail");
         }
