@@ -133,7 +133,7 @@ public final class PathfindingSimulator {
         requireDuration(seconds);
         requireInjectionEligible();
         unit.setMode(UnitMode.STUNNED);
-        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(globalFrame, seconds));
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
     }
 
     /**
@@ -150,7 +150,7 @@ public final class PathfindingSimulator {
         requireInjectionEligible();
         unit.setMode(UnitMode.DISPLACED);
         unit.setDisplacementVelocity(velocity);
-        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(globalFrame, seconds));
+        unit.setTimedModeUntilGlobalFrame(globalFrame + durationFrames(seconds));
     }
 
     /** Binds or releases the unit; a bound unit skips integration in every moving mode. */
@@ -187,12 +187,12 @@ public final class PathfindingSimulator {
         }
     }
 
-    private static long durationFrames(long globalFrame, float seconds) {
-        // The rounded frame count is capped at the local frame counter's range
-        // so the simulator can always tick up to the expiry frame; capping at
-        // Long.MAX_VALUE would demand frames the counter can never reach.
+    private long durationFrames(float seconds) {
+        // The rounded frame count is capped at the remaining local counter
+        // range: validateGlobalFrame rejects frame == Integer.MAX_VALUE, so the
+        // expiry frame must stay below it or the timed mode could never expire.
         return Math.min(Math.max(1L, Math.round(seconds / F32.DT)),
-                (long) Integer.MAX_VALUE - globalFrame);
+                (long) Integer.MAX_VALUE - 1L - frame);
     }
 
     public FrameTrace tick(long globalFrame) {

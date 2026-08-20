@@ -25,7 +25,7 @@ public final class CollisionResolver {
         requireFinite(requestedDisplacement, "Requested displacement");
         requireFinite(nextVelocity, "Next velocity");
         requireFinite(unit.entityPosition(), "Entity position");
-        Vec2f correctedDisplacement = requestedDisplacement;
+        Vec2f correctedDisplacement = silenceFloatNoise(requestedDisplacement);
         Vec2f correctedVelocity = nextVelocity;
         boolean collided = false;
 
@@ -127,14 +127,29 @@ public final class CollisionResolver {
         return step != 0 && current != destination;
     }
 
+    /**
+     * Zeroes displacement components at or below float noise. A sub-EPSILON
+     * component cannot meaningfully move the unit, and leaving it in would
+     * either clip through a boundary it sits next to or demand a sweep whose
+     * crossing time overflows. Silencing it keeps the unit exactly stationary.
+     */
+    private static Vec2f silenceFloatNoise(Vec2f displacement) {
+        float x = F32.abs(displacement.x()) <= F32.EPSILON ? 0f : displacement.x();
+        float y = F32.abs(displacement.y()) <= F32.EPSILON ? 0f : displacement.y();
+        if (x == displacement.x() && y == displacement.y()) {
+            return displacement;
+        }
+        return new Vec2f(x, y);
+    }
+
     private int direction(float value) {
-        // Treat both signed zeroes and float noise as stationary: a denormal
-        // displacement would otherwise sweep an axis whose crossing time is
-        // astronomical, and Inf == Inf could masquerade as a diagonal tie.
-        if (F32.abs(value) <= F32.EPSILON) {
+        // Treat both signed zeroes as stationary. Float.compare avoids narrowing
+        // the float to an integer before choosing the DDA direction. Sub-EPSILON
+        // noise is already silenced in resolve(), so only true zero stops a sweep.
+        if (value == 0f) {
             return 0;
         }
-        return value < 0f ? -1 : 1;
+        return Float.compare(value, 0f) < 0 ? -1 : 1;
     }
 
     private float crossingTime(float position, float displacement, int currentTile, int step) {

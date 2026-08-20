@@ -69,6 +69,7 @@ public final class SimulatorTests {
         run("setPlayTime rebases the clock at any frame without a jump", SimulatorTests::setPlayTimeAtNonzeroFrame);
         run("a capacity-one trace ring still delivers every frame to the listener", SimulatorTests::traceCapacityOne);
         run("a huge stun duration clamps instead of overflowing the expiry frame", SimulatorTests::hugeStunDurationClamps);
+        run("a sub-epsilon displacement is stationary instead of clipping walls", SimulatorTests::subEpsilonDisplacementIsStationary);
         run("map dimensions stay within the allocation bound", SimulatorTests::mapDimensionBounds);
         System.out.println("Passed " + passed + " simulator tests.");
     }
@@ -1177,8 +1178,42 @@ public final class SimulatorTests {
         simulator.stun(1L, 65_000f);
         truth(simulator.unit().timedModeUntilGlobalFrame() > 0L,
                 "the clamped expiry frame stays positive instead of wrapping negative");
-        truth(simulator.unit().timedModeUntilGlobalFrame() <= Integer.MAX_VALUE,
-                "the expiry frame never outlives the local frame counter's range");
+        truth(simulator.unit().timedModeUntilGlobalFrame() <= (long) Integer.MAX_VALUE - 1L,
+                "the expiry frame is tickable: the audit counter rejects frame == Integer.MAX_VALUE");
+
+        // A saturating duration must land exactly on the last tickable frame...
+        PathfindingSimulator saturated = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        saturated.tick(0L);
+        saturated.stun(1L, Float.MAX_VALUE);
+        equal((long) Integer.MAX_VALUE - 1L, saturated.unit().timedModeUntilGlobalFrame(),
+                "a saturating duration clamps to the last tickable frame, not the rejected one");
+
+        // ...even when the stage starts far beyond Integer.MAX_VALUE: the cap
+        // follows the local counter, not the absolute global frame.
+        PathfindingSimulator offset = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        offset.tick(5_000_000_000L);
+        offset.stun(5_000_000_001L, Float.MAX_VALUE);
+        equal(5_000_000_001L + (long) Integer.MAX_VALUE - 2L, offset.unit().timedModeUntilGlobalFrame(),
+                "the clamp keys off the remaining local counter range");
+    }
+
+    private static void subEpsilonDisplacementIsStationary() {
+        GridMap map = new GridMap(4, 1);
+        map.setRule(new TileCoord(3, 0), TileRule.impassable());
+        Route route = route(new Vec2f(2.9999995f, 0.5f), new Vec2f(2.5f, 0.5f), List.of());
+        PathfindingSimulator simulator = new PathfindingSimulator(map, route, UnitConfig.normalGround(1f));
+        // 2e-5 tiles/s * DT = 6.7e-7 per frame, below the float-noise threshold:
+        // it must be treated as stationary instead of drifting through the wall.
+        simulator.displace(0L, new Vec2f(2e-5f, 0f), 5f);
+        for (long frame = 0L; frame <= 30L; frame++) {
+            simulator.tick(frame);
+        }
+        equal(UnitMode.DISPLACED, simulator.unit().mode(),
+                "a sub-epsilon push never latches the unit into the wall");
+        equal(2.9999995f, simulator.unit().entityPosition().x(), 0f,
+                "a sub-epsilon displacement stays put instead of clipping toward the wall");
+        equal(new TileCoord(2, 0), TileCoord.fromPosition(simulator.unit().entityPosition()),
+                "the unit never enters the wall tile");
     }
 
     private static void mapDimensionBounds() {
