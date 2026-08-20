@@ -57,6 +57,7 @@ public final class SimulatorUiMain {
         verifyCheckpointEditing();
         verifyCombatStateInjection();
         verifyInjectionBelowFrontier();
+        verifyInjectionEditSeekOrdering();
         verifyMultiUnit();
         verifyUndoRedo();
         verifyScenarioCodecRejection();
@@ -536,6 +537,90 @@ public final class SimulatorUiMain {
         }
         if (!terminal.isTerminal() || terminal.terminalFrame() <= oldTerminal) {
             throw new IllegalStateException("Stale terminal frame still blocked the re-derived run");
+        }
+    }
+
+    /**
+     * The most complex session ordering: inject a run event, seek backward,
+     * edit the scenario (which clears run events and restarts playback), then
+     * seek into frames that only existed in the pre-edit timeline. Every step
+     * must observe only the post-edit scenario, with no leak from the cleared
+     * injection or the discarded timeline.
+     */
+    private static void verifyInjectionEditSeekOrdering() {
+        SimulationSession session = new SimulationSession();
+        for (int frame = 0; frame < 8; frame++) {
+            session.tickFrame();
+        }
+        UiPoint preEditSix = session.generatedStateAtFrame(6).units().get(0).entityPosition();
+
+        // Inject below the frontier, then seek backward before the edit.
+        session.seekFrame(2);
+        session.applyStun(1f);
+        if (session.generatedFrameCount() != 3) {
+            throw new IllegalStateException("Setup: below-frontier injection did not truncate");
+        }
+        long revisionBeforeEdit = session.scenarioRevision();
+
+        // The scenario edit clears run events and restarts the timeline.
+        session.setTerrain(new UiCell(4, 4), UiTerrain.WALL);
+        if (session.scenarioRevision() == revisionBeforeEdit || session.snapshot().frame() != 0) {
+            throw new IllegalStateException("Scenario edit did not restart playback");
+        }
+        if (session.generatedFrameCount() != 1) {
+            throw new IllegalStateException("Edit kept pre-edit timeline frames: "
+                    + session.generatedFrameCount());
+        }
+
+        // The cleared injection must not leak: regenerate past the old point.
+        for (int frame = 0; frame < 8 && session.canTick(); frame++) {
+            session.tickFrame();
+        }
+        UiSnapshot six = session.seekFrame(6).units().get(0);
+        if ("眩晕".equals(six.unitMode())) {
+            throw new IllegalStateException("Cleared stun leaked into the post-edit run");
+        }
+        if (!"移动".equals(six.unitMode()) && !session.isTerminal()) {
+            throw new IllegalStateException("Unexpected mode after edit: " + six.unitMode());
+        }
+
+        // Determinism across the whole sequence: replay from S[0] matches.
+        List<UiPoint> postEdit = new java.util.ArrayList<>();
+        for (int frame = 0; frame < session.generatedFrameCount(); frame++) {
+            postEdit.add(session.generatedStateAtFrame(frame).units().get(0).entityPosition());
+        }
+        session.seekFrame(0);
+        for (int frame = 0; frame < postEdit.size(); frame++) {
+            assertFloatBits(postEdit.get(frame),
+                    session.seekFrame(frame).units().get(0).entityPosition(),
+                    "post-edit replay frame " + frame);
+        }
+
+        // Frame 6 exists in the post-edit timeline and was re-derived under the
+        // edited scenario (wall present), not served from the discarded pre-edit
+        // timeline (which had the stun and no wall). Its mode proves which run
+        // produced it: the pre-edit branch was stunned, the post-edit one is not.
+        UiFrame sixFrame = session.generatedStateAtFrame(6);
+        if (sixFrame == null) {
+            throw new IllegalStateException("Post-edit timeline did not regenerate frame 6");
+        }
+        UiSnapshot postEditSix = sixFrame.units().get(0);
+        if ("眩晕".equals(postEditSix.unitMode())) {
+            throw new IllegalStateException("Post-edit frame 6 came from the stale pre-edit run");
+        }
+        if (postEditSix.entityPosition().equals(preEditSix) && session.generatedFrameCount() > 6
+                && !"移动".equals(postEditSix.unitMode())) {
+            throw new IllegalStateException("Post-edit frame 6 is in an impossible state");
+        }
+
+        // Undoing the edit restores the pre-edit scenario but not its run
+        // events; the restored timeline must also restart cleanly from S[0].
+        if (!session.undo() || session.generatedFrameCount() != 1 || session.snapshot().frame() != 0) {
+            throw new IllegalStateException("Undo after the ordering sequence did not restart cleanly");
+        }
+        UiSnapshot ticked = session.tick();
+        if (!"移动".equals(ticked.unitMode())) {
+            throw new IllegalStateException("Undo leaked a combat injection into the restored scenario");
         }
     }
 
