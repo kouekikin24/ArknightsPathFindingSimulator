@@ -27,6 +27,7 @@ jobs:
           javac --release 21 -encoding UTF-8 -d out @out/sources.txt
 
       - name: Run simulator regression tests
+        shell: bash
         run: java -Dfile.encoding=UTF-8 -cp out SimulatorTests
 
   ui-verify:
@@ -48,4 +49,5 @@ jobs:
           javac --release 21 -encoding UTF-8 -d out @out/sources.txt
 
       - name: Run UI session verification
+        shell: bash
         run: java -Dfile.encoding=UTF-8 -cp out SimulatorUiMain --verify
