@@ -163,6 +163,10 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
         pack();
         setLocationByPlatform(true);
+        // Every non-input control is unfocusable, so without this no component
+        // owns the window focus and WHEN_IN_FOCUSED_WINDOW keys never fire.
+        // The slider is the safe focus owner: it only claims the arrow keys.
+        SwingUtilities.invokeLater(timelineSlider::requestFocusInWindow);
         SwingUtilities.invokeLater(this::updateViewportCamera);
     }
 
