@@ -109,7 +109,8 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner mapHeightSpinner = new JSpinner(new SpinnerNumberModel(8,
             ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1));
     private final JComboBox<UiMovementMode> movementModeBox = new JComboBox<>(UiMovementMode.values());
-    private final JSpinner speedSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, (double) Float.MAX_VALUE, 0.1d));
+    private final JSpinner speedSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, (double) Float.MAX_VALUE, 0.1d)), 5);
     private final JCheckBox diagonalToggle = new JCheckBox("允许斜向连线", true);
     private final javax.swing.DefaultListModel<String> unitModel = new javax.swing.DefaultListModel<>();
     private final JList<String> unitList = new JList<>(unitModel);
@@ -117,8 +118,17 @@ public final class SimulatorWorkbench extends JFrame {
     // Bounds match the scenario format: seconds is any non-negative finite
     // float, area any non-negative int, so an imported value is never outside
     // the editor's range (which would dead the step buttons and clamp on edit).
-    private final JSpinner checkpointSecondsSpinner = new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d));
-    private final JSpinner checkpointAreaSpinner = new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1));
+    // The editor width is capped separately so a huge maximum never widens it.
+    private final JSpinner checkpointSecondsSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d)), 6);
+    private final JSpinner checkpointAreaSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5);
+    private final JSpinner checkpointXSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0, 0, ScenarioCodec.MAXIMUM_DIMENSION - 1, 1)), 3);
+    private final JSpinner checkpointYSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0, 0, ScenarioCodec.MAXIMUM_DIMENSION - 1, 1)), 3);
+    private JLabel checkpointCoordLabel;
+    private JPanel checkpointCoordPanel;
     private final JButton addCheckpointButton = new JButton("添加");
     private final JSpinner stunSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d)));
     private final JSpinner pushXSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));
@@ -151,6 +161,10 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setShowPath(false);
         canvas.setTheme(theme);
         mapScrollPane.getViewport().setBackground(theme.canvasBackground());
+        // Startup in dark mode: the L&F built the input controls light, so remap once.
+        if (theme == UiTheme.DARK) {
+            recolor(getContentPane(), UiTheme.LIGHT);
+        }
         canvas.setZoomChangeListener(camera::refreshZoomLabel);
         canvas.setViewportSize(mapScrollPane.getViewport().getWidth(), mapScrollPane.getViewport().getHeight());
         // Space belongs to play/pause: no non-input control may hold keyboard focus.
@@ -580,6 +594,21 @@ public final class SimulatorWorkbench extends JFrame {
         parameters.add(checkpointSecondsSpinner);
         parameters.add(checkpointAreaSpinner);
         editor.add(parameters, c);
+        c.gridx = 0;
+        c.gridy = 2;
+        c.weightx = 0d;
+        checkpointCoordLabel = new JLabel("坐标");
+        editor.add(checkpointCoordLabel, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        checkpointCoordPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        checkpointCoordPanel.setOpaque(false);
+        checkpointCoordPanel.add(checkpointXSpinner);
+        JLabel comma = new JLabel(",");
+        comma.setForeground(LABEL_TEXT);
+        checkpointCoordPanel.add(comma);
+        checkpointCoordPanel.add(checkpointYSpinner);
+        editor.add(checkpointCoordPanel, c);
         section.add(editor, BorderLayout.NORTH);
 
         checkpointList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -598,6 +627,10 @@ public final class SimulatorWorkbench extends JFrame {
             checkpointTypeBox.setSelectedItem(selected.type());
             checkpointSecondsSpinner.setValue((double) selected.value());
             checkpointAreaSpinner.setValue(selected.area());
+            if (selected.cell() != null) {
+                checkpointXSpinner.setValue(selected.cell().x());
+                checkpointYSpinner.setValue(selected.cell().y());
+            }
         });
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
 
@@ -760,7 +793,11 @@ public final class SimulatorWorkbench extends JFrame {
             return;
         }
         try {
-            runEdit(() -> session.updateCheckpoint(index, selectedCheckpointType(),
+            UiCheckpointType type = selectedCheckpointType();
+            UiCell cell = type.hasPoint()
+                    ? new UiCell(intValue(checkpointXSpinner), intValue(checkpointYSpinner))
+                    : null;
+            runEdit(() -> session.updateCheckpoint(index, type, cell,
                     floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner)));
         } catch (IllegalArgumentException error) {
             operationStatus.setText("无法更新：" + error.getMessage());
@@ -893,6 +930,13 @@ public final class SimulatorWorkbench extends JFrame {
         return spinner.getModel() instanceof SpinnerNumberModel model && model.getNextValue() != null;
     }
 
+    /** Verify hook: huge spinner maxima must not widen the editors and clip the sidebar. */
+    boolean verifySidebarFits() {
+        return speedSpinner.getPreferredSize().width < 120
+                && checkpointSecondsSpinner.getPreferredSize().width < 120
+                && checkpointAreaSpinner.getPreferredSize().width < 120;
+    }
+
     // ----- theming -----------------------------------------------------------
 
     private static UiTheme loadTheme() {
@@ -920,25 +964,12 @@ public final class SimulatorWorkbench extends JFrame {
         saveTheme();
     }
 
-    /** Remaps chrome colors by equality with the previous theme, in place. */
+    /** Remaps chrome and input-control colors in place, keyed by the previous theme. */
     private void recolor(Component component, UiTheme previous) {
-        if (component instanceof JComponent jc) {
-            Color bg = jc.getBackground();
-            if (bg != null) {
-                if (bg.equals(previous.windowBackground())) {
-                    jc.setBackground(theme.windowBackground());
-                } else if (bg.equals(previous.panelBackground())) {
-                    jc.setBackground(theme.panelBackground());
-                }
-            }
-            Color fg = jc.getForeground();
-            if (fg != null) {
-                if (fg.equals(previous.valueText())) {
-                    jc.setForeground(theme.valueText());
-                } else if (fg.equals(previous.labelText())) {
-                    jc.setForeground(theme.labelText());
-                }
-            }
+        boolean toDark = theme == UiTheme.DARK;
+        if (component instanceof JComponent jc && !(component instanceof SimulationCanvas)) {
+            remapBackground(jc, previous, toDark);
+            remapForeground(jc, previous, toDark);
             remapBorder(jc, previous);
         }
         if (component instanceof Container container) {
@@ -946,6 +977,43 @@ public final class SimulatorWorkbench extends JFrame {
                 recolor(child, previous);
             }
         }
+    }
+
+    private void remapBackground(JComponent jc, UiTheme previous, boolean toDark) {
+        Color bg = jc.getBackground();
+        if (bg == null) {
+            return;
+        }
+        boolean input = jc instanceof JTextField || jc instanceof JList || jc instanceof JComboBox;
+        if (bg.equals(previous.windowBackground())) {
+            jc.setBackground(theme.windowBackground());
+        } else if (bg.equals(previous.panelBackground())) {
+            jc.setBackground(theme.panelBackground());
+        } else if (toDark && luminance(bg) > 150) {
+            jc.setBackground(input ? theme.canvasBackground() : theme.panelBackground());
+        } else if (!toDark && luminance(bg) < 120) {
+            jc.setBackground(input ? Color.WHITE : UiTheme.LIGHT.panelBackground());
+        }
+    }
+
+    private void remapForeground(JComponent jc, UiTheme previous, boolean toDark) {
+        Color fg = jc.getForeground();
+        if (fg == null) {
+            return;
+        }
+        if (fg.equals(previous.valueText())) {
+            jc.setForeground(theme.valueText());
+        } else if (fg.equals(previous.labelText())) {
+            jc.setForeground(theme.labelText());
+        } else if (toDark && luminance(fg) < 120) {
+            jc.setForeground(theme.valueText());
+        } else if (!toDark && luminance(fg) > 150) {
+            jc.setForeground(UiTheme.LIGHT.valueText());
+        }
+    }
+
+    private static double luminance(Color color) {
+        return 0.299 * color.getRed() + 0.587 * color.getGreen() + 0.114 * color.getBlue();
     }
 
     private void remapBorder(JComponent jc, UiTheme previous) {
@@ -1131,9 +1199,15 @@ public final class SimulatorWorkbench extends JFrame {
         UiCheckpointType type = selectedCheckpointType();
         checkpointSecondsSpinner.setVisible(type.usesSeconds());
         checkpointAreaSpinner.setVisible(type.usesArea());
+        if (checkpointCoordLabel != null) {
+            checkpointCoordLabel.setVisible(type.hasPoint());
+        }
+        if (checkpointCoordPanel != null) {
+            checkpointCoordPanel.setVisible(type.hasPoint());
+        }
         addCheckpointButton.setEnabled(!type.hasPoint());
         addCheckpointButton.setToolTipText(type.hasPoint()
-                ? "坐标类检查点请在地图上用 + 工具放置"
+                ? "坐标类检查点请在地图上用 + 工具放置，或选中后用坐标+更新移动"
                 : "加入列表（选中项之前插入，未选中则加到末尾）");
         java.awt.Container parameters = checkpointSecondsSpinner.getParent();
         if (parameters != null) {
@@ -1249,8 +1323,13 @@ public final class SimulatorWorkbench extends JFrame {
 
     /** Keeps combat-row spinners narrow enough that the sidebar never clips horizontally. */
     private static JSpinner narrowSpinner(JSpinner spinner) {
+        return cappedEditor(spinner, 2);
+    }
+
+    /** Caps the editor's column width so a huge model maximum never widens the sidebar. */
+    private static JSpinner cappedEditor(JSpinner spinner, int columns) {
         if (spinner.getEditor() instanceof JSpinner.DefaultEditor editor) {
-            editor.getTextField().setColumns(2);
+            editor.getTextField().setColumns(columns);
         }
         return spinner;
     }

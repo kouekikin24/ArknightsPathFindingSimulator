@@ -213,6 +213,10 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "Imported values must stay inside the editor spinner ranges");
                 }
+                if (!workbench.verifySidebarFits()) {
+                    throw new IllegalStateException(
+                            "A wide spinner maximum clipped the sidebar horizontally");
+                }
             });
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();

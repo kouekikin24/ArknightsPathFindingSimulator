@@ -248,16 +248,22 @@ public final class SimulationSession {
 
     /** Replaces a checkpoint's type and parameters, keeping its map cell when the new type uses one. */
     public synchronized void updateCheckpoint(int index, UiCheckpointType type, float value, int area) {
+        updateCheckpoint(index, type, null, value, area);
+    }
+
+    /** Like {@link #updateCheckpoint(int, UiCheckpointType, float, int)} but moves a point checkpoint to {@code cell}. */
+    public synchronized void updateCheckpoint(int index, UiCheckpointType type, UiCell cell,
+                                              float value, int area) {
         requireCheckpointIndex(index);
         List<UiCheckpoint> current = draft().checkpoints();
         UiCheckpoint previous = current.get(index);
-        if (type.hasPoint() && previous.cell() == null) {
+        UiCheckpoint updated = new UiCheckpoint(type,
+                type.hasPoint() ? (cell != null ? cell : previous.cell()) : null,
+                type.usesSeconds() ? value : 0f, type.usesArea() ? area : 0);
+        if (type.hasPoint() && updated.cell() == null) {
             throw new IllegalArgumentException("检查点 " + (index + 1)
                     + " 没有可保留的地图坐标，无法改为「" + type.label() + "」");
         }
-        // Switching to a point-less type drops the cell instead of failing.
-        UiCheckpoint updated = new UiCheckpoint(type, type.hasPoint() ? previous.cell() : null,
-                type.usesSeconds() ? value : 0f, type.usesArea() ? area : 0);
         List<UiCheckpoint> next = new ArrayList<>(current);
         next.set(index, updated);
         commitCheckpoints(next);

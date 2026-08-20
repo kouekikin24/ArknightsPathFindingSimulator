@@ -43,7 +43,9 @@ final class UiFormat {
         if (snapshot.completed()) {
             return "已到达终点";
         }
-        return snapshot.avoidanceRecomputed() ? "避障已刷新" : "就绪";
+        // Stable while running: the per-frame avoidance refresh is shown in the
+        // sidebar "避障" row, not here, so the footer does not flicker.
+        return "就绪";
     }
 
     static String point(UiPoint point) {
