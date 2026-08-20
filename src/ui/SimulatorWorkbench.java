@@ -25,11 +25,15 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.border.Border;
+import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
+import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
@@ -46,6 +50,7 @@ import java.awt.event.WindowEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.prefs.Preferences;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -53,11 +58,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Swing workbench. SimulationSession remains the only UI-to-core adapter. */
 public final class SimulatorWorkbench extends JFrame {
-    private static final Color WINDOW_BACKGROUND = new Color(242, 246, 243);
-    private static final Color PANEL_BACKGROUND = new Color(250, 252, 250);
-    private static final Color BORDER = new Color(196, 207, 200);
-    private static final Color VALUE = new Color(31, 48, 41);
-    private static final Color LABEL_TEXT = new Color(94, 111, 101);
+    private UiTheme theme = loadTheme();
+    private Color WINDOW_BACKGROUND = theme.windowBackground();
+    private Color PANEL_BACKGROUND = theme.panelBackground();
+    private Color BORDER = theme.border();
+    private Color VALUE = theme.valueText();
+    private Color LABEL_TEXT = theme.labelText();
 
     private final SimulationSession session = new SimulationSession();
     private final SimulationCanvas canvas = new SimulationCanvas(this::applyEditorTool);
@@ -130,6 +136,8 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
         camera.requestFit();
     });
+    private final JButton themeToggleButton = iconButton(theme == UiTheme.DARK ? "☀" : "☾",
+            "切换夜间/日间模式");
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
@@ -141,6 +149,8 @@ public final class SimulatorWorkbench extends JFrame {
         setPreferredSize(new Dimension(1180, 760));
         setContentPane(createContent());
         canvas.setShowPath(false);
+        canvas.setTheme(theme);
+        mapScrollPane.getViewport().setBackground(theme.canvasBackground());
         canvas.setZoomChangeListener(camera::refreshZoomLabel);
         canvas.setViewportSize(mapScrollPane.getViewport().getWidth(), mapScrollPane.getViewport().getHeight());
         // Space belongs to play/pause: no non-input control may hold keyboard focus.
@@ -215,15 +225,19 @@ public final class SimulatorWorkbench extends JFrame {
         redoButton.addActionListener(event -> redoEdit());
         toolbar.add(redoButton);
         toolbar.addSeparator(new Dimension(12, 1));
-        toolbar.add(new JLabel("回放"));
+        JLabel replayLabel = new JLabel("回放");
+        replayLabel.setForeground(LABEL_TEXT);
+        toolbar.add(replayLabel);
         playbackRate.setMaximumSize(new Dimension(78, 29));
         toolbar.add(playbackRate);
         toolbar.addSeparator(new Dimension(10, 1));
         showPathToggle.setOpaque(false);
+        showPathToggle.setForeground(VALUE);
         showPathToggle.setToolTipText("显示规划路线图");
         showPathToggle.addActionListener(event -> canvas.setShowPath(showPathToggle.isSelected()));
         toolbar.add(showPathToggle);
         showTrajectoryToggle.setOpaque(false);
+        showTrajectoryToggle.setForeground(VALUE);
         showTrajectoryToggle.setToolTipText("显示已生成帧的实际敌人轨迹");
         showTrajectoryToggle.addActionListener(event -> canvas.setShowTrajectory(showTrajectoryToggle.isSelected()));
         toolbar.add(showTrajectoryToggle);
@@ -237,6 +251,8 @@ public final class SimulatorWorkbench extends JFrame {
         JButton exportTraceButton = iconButton("导出轨迹", "把已生成帧导出为逐帧 CSV");
         exportTraceButton.addActionListener(event -> scenarioFiles.exportTrace());
         toolbar.add(exportTraceButton);
+        themeToggleButton.addActionListener(event -> toggleTheme());
+        toolbar.add(themeToggleButton);
         return toolbar;
     }
 
@@ -246,7 +262,9 @@ public final class SimulatorWorkbench extends JFrame {
         panel.setBorder(BorderFactory.createLineBorder(BORDER));
         JPanel zoomBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 3));
         zoomBar.setBackground(PANEL_BACKGROUND);
-        zoomBar.add(new JLabel("缩放"));
+        JLabel zoomLabel = new JLabel("缩放");
+        zoomLabel.setForeground(LABEL_TEXT);
+        zoomBar.add(zoomLabel);
         zoomValue.setHorizontalAlignment(SwingConstants.LEFT);
         zoomBar.add(zoomValue);
         panel.add(zoomBar, BorderLayout.NORTH);
@@ -264,7 +282,9 @@ public final class SimulatorWorkbench extends JFrame {
         labels.setOpaque(false);
         labels.add(sliderFrameValue);
         labels.add(sliderTimeValue);
-        labels.add(new JLabel("精确时间"));
+        JLabel exactLabel = new JLabel("精确时间");
+        exactLabel.setForeground(LABEL_TEXT);
+        labels.add(exactLabel);
         timeInput.setColumns(11);
         timeInput.setToolTipText("输入帧号、n/30 或可精确换算为帧的秒数");
         labels.add(timeInput);
@@ -411,6 +431,7 @@ public final class SimulatorWorkbench extends JFrame {
         c.gridy = 2;
         c.gridwidth = 2;
         diagonalToggle.setOpaque(false);
+        diagonalToggle.setForeground(VALUE);
         section.add(diagonalToggle, c);
         return section;
     }
@@ -419,10 +440,10 @@ public final class SimulatorWorkbench extends JFrame {
         JPanel section = section("编辑");
         section.setLayout(new GridLayout(2, 4, 4, 4));
         ButtonGroup group = new ButtonGroup();
-        section.add(toolButton(group, EditorTool.OPEN, new SwatchIcon(SimulationCanvas.terrainColor(UiTerrain.OPEN)), "通路"));
-        section.add(toolButton(group, EditorTool.BOX, new SwatchIcon(SimulationCanvas.terrainColor(UiTerrain.BOX)), "箱子"));
-        section.add(toolButton(group, EditorTool.PIT, new SwatchIcon(SimulationCanvas.terrainColor(UiTerrain.PIT)), "坑"));
-        section.add(toolButton(group, EditorTool.WALL, new SwatchIcon(SimulationCanvas.terrainColor(UiTerrain.WALL)), "墙"));
+        section.add(toolButton(group, EditorTool.OPEN, new SwatchIcon(canvas, UiTerrain.OPEN), "通路"));
+        section.add(toolButton(group, EditorTool.BOX, new SwatchIcon(canvas, UiTerrain.BOX), "箱子"));
+        section.add(toolButton(group, EditorTool.PIT, new SwatchIcon(canvas, UiTerrain.PIT), "坑"));
+        section.add(toolButton(group, EditorTool.WALL, new SwatchIcon(canvas, UiTerrain.WALL), "墙"));
         section.add(toolButton(group, EditorTool.SPAWN, "S", "起点"));
         section.add(toolButton(group, EditorTool.ENDPOINT, "E", "终点"));
         section.add(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"));
@@ -504,7 +525,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     /** One labeled combat row: label at gridx 0, controls flow-left at gridx 1. */
-    private static void addCombatRow(JPanel section, int row, String label, Component... fields) {
+    private void addCombatRow(JPanel section, int row, String label, Component... fields) {
         GridBagConstraints c = baseConstraints();
         JLabel name = new JLabel(label);
         name.setForeground(LABEL_TEXT);
@@ -872,6 +893,87 @@ public final class SimulatorWorkbench extends JFrame {
         return spinner.getModel() instanceof SpinnerNumberModel model && model.getNextValue() != null;
     }
 
+    // ----- theming -----------------------------------------------------------
+
+    private static UiTheme loadTheme() {
+        return "dark".equals(Preferences.userNodeForPackage(SimulatorWorkbench.class)
+                .get("theme", "light")) ? UiTheme.DARK : UiTheme.LIGHT;
+    }
+
+    private void saveTheme() {
+        Preferences.userNodeForPackage(SimulatorWorkbench.class)
+                .put("theme", theme == UiTheme.DARK ? "dark" : "light");
+    }
+
+    private void toggleTheme() {
+        UiTheme previous = theme;
+        theme = theme == UiTheme.DARK ? UiTheme.LIGHT : UiTheme.DARK;
+        WINDOW_BACKGROUND = theme.windowBackground();
+        PANEL_BACKGROUND = theme.panelBackground();
+        BORDER = theme.border();
+        VALUE = theme.valueText();
+        LABEL_TEXT = theme.labelText();
+        canvas.setTheme(theme);
+        mapScrollPane.getViewport().setBackground(theme.canvasBackground());
+        recolor(getContentPane(), previous);
+        themeToggleButton.setText(theme == UiTheme.DARK ? "☀" : "☾");
+        saveTheme();
+    }
+
+    /** Remaps chrome colors by equality with the previous theme, in place. */
+    private void recolor(Component component, UiTheme previous) {
+        if (component instanceof JComponent jc) {
+            Color bg = jc.getBackground();
+            if (bg != null) {
+                if (bg.equals(previous.windowBackground())) {
+                    jc.setBackground(theme.windowBackground());
+                } else if (bg.equals(previous.panelBackground())) {
+                    jc.setBackground(theme.panelBackground());
+                }
+            }
+            Color fg = jc.getForeground();
+            if (fg != null) {
+                if (fg.equals(previous.valueText())) {
+                    jc.setForeground(theme.valueText());
+                } else if (fg.equals(previous.labelText())) {
+                    jc.setForeground(theme.labelText());
+                }
+            }
+            remapBorder(jc, previous);
+        }
+        if (component instanceof Container container) {
+            for (Component child : container.getComponents()) {
+                recolor(child, previous);
+            }
+        }
+    }
+
+    private void remapBorder(JComponent jc, UiTheme previous) {
+        Border remapped = remapBorder(jc.getBorder(), previous);
+        if (remapped != jc.getBorder()) {
+            jc.setBorder(remapped);
+        }
+    }
+
+    private Border remapBorder(Border border, UiTheme previous) {
+        if (border instanceof TitledBorder titled) {
+            TitledBorder next = new TitledBorder(remapBorder(titled.getBorder(), previous), titled.getTitle());
+            if (titled.getTitleColor() != null && titled.getTitleColor().equals(previous.valueText())) {
+                next.setTitleColor(theme.valueText());
+            }
+            return next;
+        }
+        if (border instanceof LineBorder line && previous.border().equals(line.getLineColor())) {
+            return BorderFactory.createLineBorder(theme.border());
+        }
+        if (border instanceof CompoundBorder compound) {
+            return BorderFactory.createCompoundBorder(
+                    remapBorder(compound.getOutsideBorder(), previous),
+                    remapBorder(compound.getInsideBorder(), previous));
+        }
+        return border;
+    }
+
     private void seekFromInput() {
         final long frame;
         try {
@@ -1047,7 +1149,7 @@ public final class SimulatorWorkbench extends JFrame {
         return panel;
     }
 
-    private static JPanel section(String title) {
+    private JPanel section(String title) {
         JPanel panel = new JPanel();
         panel.setBackground(PANEL_BACKGROUND);
         TitledBorder border = BorderFactory.createTitledBorder(BorderFactory.createLineBorder(BORDER), title);
@@ -1066,18 +1168,20 @@ public final class SimulatorWorkbench extends JFrame {
         return c;
     }
 
-    private static void addFormRow(JPanel panel, GridBagConstraints c, int row, String label, Component component) {
+    private void addFormRow(JPanel panel, GridBagConstraints c, int row, String label, Component component) {
         c.gridx = 0;
         c.gridy = row;
         c.gridwidth = 1;
         c.weightx = 0d;
-        panel.add(new JLabel(label), c);
+        JLabel name = new JLabel(label);
+        name.setForeground(LABEL_TEXT);
+        panel.add(name, c);
         c.gridx = 1;
         c.weightx = 1d;
         panel.add(component, c);
     }
 
-    private static void addStatistic(JPanel panel, int row, String label, JLabel value) {
+    private void addStatistic(JPanel panel, int row, String label, JLabel value) {
         GridBagConstraints c = baseConstraints();
         c.gridx = 0;
         c.gridy = row;
@@ -1092,7 +1196,7 @@ public final class SimulatorWorkbench extends JFrame {
         panel.add(value, c);
     }
 
-    private static JLabel valueLabel() {
+    private JLabel valueLabel() {
         JLabel label = new JLabel("-");
         label.setForeground(VALUE);
         label.setHorizontalAlignment(SwingConstants.RIGHT);
@@ -1154,10 +1258,12 @@ public final class SimulatorWorkbench extends JFrame {
     private enum EditorTool { OPEN, BOX, PIT, WALL, SPAWN, ENDPOINT, CHECKPOINT, BROWSE }
 
     private static final class SwatchIcon implements Icon {
-        private final Color color;
+        private final SimulationCanvas canvas;
+        private final UiTerrain terrain;
 
-        private SwatchIcon(Color color) {
-            this.color = color;
+        private SwatchIcon(SimulationCanvas canvas, UiTerrain terrain) {
+            this.canvas = canvas;
+            this.terrain = terrain;
         }
 
         @Override
@@ -1170,9 +1276,9 @@ public final class SimulatorWorkbench extends JFrame {
         public void paintIcon(Component component, Graphics graphics, int x, int y) {
             Graphics2D canvas = (Graphics2D) graphics.create();
             try {
-                canvas.setColor(color);
+                canvas.setColor(this.canvas.terrainColor(terrain));
                 canvas.fillRect(x, y, getIconWidth(), getIconHeight());
-                canvas.setColor(new Color(54, 65, 60));
+                canvas.setColor(new Color(128, 138, 132));
                 canvas.drawRect(x, y, getIconWidth() - 1, getIconHeight() - 1);
             } finally {
                 canvas.dispose();

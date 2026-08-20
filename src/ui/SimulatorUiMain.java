@@ -81,6 +81,7 @@ public final class SimulatorUiMain {
         verifyDisplayYUp();
         verifyTerrainAlignment(after);
         verifyVectorDisplayFlip();
+        verifyTheme(after);
         verifyWorkbenchPolicies();
         System.out.println("UI session verification passed.");
     }
@@ -146,6 +147,51 @@ public final class SimulatorUiMain {
             }
         }
         return false;
+    }
+
+    /** The dark theme must render a visibly darker canvas than the light theme. */
+    private static void verifyTheme(UiSnapshot snapshot) {
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(canvas.fitZoom());
+                canvas.setSize(canvas.getPreferredSize());
+                canvas.setTheme(UiTheme.DARK);
+                int darkBg = paintCanvas(canvas).getRGB(2, 2);
+                canvas.setTheme(UiTheme.LIGHT);
+                int lightBg = paintCanvas(canvas).getRGB(2, 2);
+                if (luminance(darkBg) >= luminance(lightBg)) {
+                    throw new IllegalStateException(
+                            "Dark canvas background is not darker than the light one");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying themes", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Theme verification failed", exception.getCause());
+        }
+    }
+
+    private static BufferedImage paintCanvas(SimulationCanvas canvas) {
+        BufferedImage image = new BufferedImage(canvas.getWidth(), canvas.getHeight(),
+                BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            canvas.paint(graphics);
+        } finally {
+            graphics.dispose();
+        }
+        return image;
+    }
+
+    private static double luminance(int rgb) {
+        int r = (rgb >> 16) & 255;
+        int g = (rgb >> 8) & 255;
+        int b = rgb & 255;
+        return 0.299 * r + 0.587 * g + 0.114 * b;
     }
 
     /**

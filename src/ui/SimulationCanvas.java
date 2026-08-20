@@ -24,28 +24,46 @@ public final class SimulationCanvas extends JComponent {
     private static final int PADDING = 24;
     private static final double MIN_ZOOM = 0.1d;
     private static final double MAX_ZOOM_MULTIPLIER = 300d;
-    private static final Color BACKGROUND = new Color(234, 240, 235);
-    private static final Color GRID_LINE = new Color(191, 204, 196);
-    private static final Color PATH = new Color(68, 135, 116);
-    private static final Color TRAJECTORY = new Color(198, 57, 46);
-    private static final Color[] UNIT_TRAJECTORY_COLORS = {
-            new Color(198, 57, 46), new Color(52, 101, 192),
-            new Color(40, 148, 82), new Color(171, 96, 40)
-    };
-    private static final Color[] UNIT_COLORS = {
-            new Color(222, 89, 64), new Color(64, 132, 222),
-            new Color(64, 190, 96), new Color(205, 140, 60)
-    };
+    private UiTheme theme = UiTheme.LIGHT;
+    private Color BACKGROUND = theme.canvasBackground();
+    private Color GRID_LINE = theme.gridLine();
+    private Color PATH = theme.path();
+    private Color TRAJECTORY = theme.trajectory();
+    private Color[] UNIT_TRAJECTORY_COLORS = theme.unitTrajectoryColors();
+    private Color[] UNIT_COLORS = theme.unitColors();
     private static final double TRAJECTORY_HIT_RADIUS = 30d;
     private static final int HOVER_INVALIDATION_WIDTH = 520;
     private static final int HOVER_INVALIDATION_HEIGHT = 140;
     private static final long REJECTION_FLASH_MILLIS = 400L;
-    private static final Color REJECTION = new Color(214, 48, 44);
-    private static final Color ENTITY = new Color(222, 89, 64);
-    private static final Color CURSOR = new Color(38, 50, 45);
-    private static final Color SPAWN = new Color(43, 137, 91);
-    private static final Color ENDPOINT = new Color(184, 61, 67);
-    private static final Color CHECKPOINT = new Color(45, 122, 171);
+    private Color REJECTION = theme.rejection();
+    private Color ENTITY = theme.entity();
+    private Color CURSOR = theme.cursor();
+    private Color SPAWN = theme.spawn();
+    private Color ENDPOINT = theme.endpoint();
+    private Color CHECKPOINT = theme.checkpoint();
+
+    /** Switches the palette and repaints; the simulation data is untouched. */
+    public void setTheme(UiTheme newTheme) {
+        this.theme = newTheme;
+        BACKGROUND = newTheme.canvasBackground();
+        GRID_LINE = newTheme.gridLine();
+        PATH = newTheme.path();
+        TRAJECTORY = newTheme.trajectory();
+        UNIT_TRAJECTORY_COLORS = newTheme.unitTrajectoryColors();
+        UNIT_COLORS = newTheme.unitColors();
+        REJECTION = newTheme.rejection();
+        ENTITY = newTheme.entity();
+        CURSOR = newTheme.cursor();
+        SPAWN = newTheme.spawn();
+        ENDPOINT = newTheme.endpoint();
+        CHECKPOINT = newTheme.checkpoint();
+        setBackground(BACKGROUND);
+        repaint();
+    }
+
+    Color terrainColor(UiTerrain terrain) {
+        return theme.terrain(terrain);
+    }
 
     private final Consumer<UiCell> cellHandler;
     private UiSnapshot snapshot;
@@ -863,15 +881,6 @@ public final class SimulationCanvas extends JComponent {
         int width = canvas.getFontMetrics().stringWidth(text);
         int baseline = y + (canvas.getFontMetrics().getAscent() - canvas.getFontMetrics().getDescent()) / 2;
         canvas.drawString(text, x - width / 2, baseline);
-    }
-
-    static Color terrainColor(UiTerrain terrain) {
-        return switch (terrain) {
-            case OPEN -> new Color(249, 252, 249);
-            case BOX -> new Color(194, 107, 84);
-            case PIT -> new Color(223, 177, 62);
-            case WALL -> new Color(81, 97, 91);
-        };
     }
 
     protected class AccessibleSimulationCanvas extends AccessibleJComponent {
