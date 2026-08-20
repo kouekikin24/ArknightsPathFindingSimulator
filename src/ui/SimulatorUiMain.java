@@ -69,6 +69,7 @@ public final class SimulatorUiMain {
         verifyCheckpointRowFormat();
         verifyShortcutGuard();
         verifyRejectionFlash(after);
+        verifyDisplayYUp();
         System.out.println("UI session verification passed.");
     }
 
@@ -1152,6 +1153,47 @@ public final class SimulatorUiMain {
             throw new IllegalStateException("Interrupted while verifying the rejection flash", exception);
         } catch (InvocationTargetException exception) {
             throw new IllegalStateException("Rejection flash verification failed", exception.getCause());
+        }
+    }
+
+    /**
+     * The canvas displays world y upward: a low-y marker must land in the
+     * lower half of the screen, a high-y marker in the upper half.
+     */
+    private static void verifyDisplayYUp() {
+        SimulationSession session = new SimulationSession();
+        UiSnapshot snapshot = session.snapshot(); // demo: spawn(1,1) endpoint(10,6) on 12x8
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(canvas.fitZoom());
+                canvas.setSize(canvas.getPreferredSize());
+                BufferedImage image = new BufferedImage(canvas.getWidth(), canvas.getHeight(),
+                        BufferedImage.TYPE_INT_ARGB);
+                Graphics2D graphics = image.createGraphics();
+                try {
+                    canvas.paint(graphics);
+                } finally {
+                    graphics.dispose();
+                }
+                // Spawn is at world y=1 (low) -> canvas y must be in the lower half.
+                Point spawn = canvas.canvasPointForWorld(1.5d, 1.5d);
+                // Endpoint is at world y=6 (high) -> canvas y must be in the upper half.
+                Point endpoint = canvas.canvasPointForWorld(10.5d, 6.5d);
+                int midY = canvas.getHeight() / 2;
+                if (spawn.y <= midY || endpoint.y >= midY) {
+                    throw new IllegalStateException(
+                            "Y-axis flip wrong: spawn screen y=" + spawn.y + " (want > " + midY
+                                    + "), endpoint screen y=" + endpoint.y + " (want < " + midY + ")");
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying the y-axis display", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Y-axis display verification failed", exception.getCause());
         }
     }
 

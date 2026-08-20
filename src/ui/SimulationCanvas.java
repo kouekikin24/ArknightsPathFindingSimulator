@@ -315,6 +315,8 @@ public final class SimulationCanvas extends JComponent {
         double worldX = canvasToWorldX(x);
         double worldY = canvasToWorldY(y);
         int cellX = (int) Math.floor(worldX);
+        // Display y grows upward, so the floor of the world y maps to the tile
+        // directly - no extra flip needed here, the inverse mapping handled it.
         int cellY = (int) Math.floor(worldY);
         if (cellX < 0 || cellX >= snapshot.width() || cellY < 0 || cellY >= snapshot.height()) {
             return null;
@@ -785,7 +787,8 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private int worldToCanvasY(double worldY) {
-        return Math.round((float) (PADDING + worldY * zoom));
+        // The display origin is the bottom-left: world y grows upward on screen.
+        return Math.round((float) (PADDING + (snapshot.height() - worldY) * zoom));
     }
 
     private float worldToCanvasXFloat(float worldX) {
@@ -793,7 +796,7 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private float worldToCanvasYFloat(float worldY) {
-        return (float) (PADDING + worldY * zoom);
+        return (float) (PADDING + (snapshot.height() - worldY) * zoom);
     }
 
     private double canvasToWorldX(int canvasX) {
@@ -809,7 +812,7 @@ public final class SimulationCanvas extends JComponent {
     }
 
     double worldYAtCanvas(double canvasY) {
-        return (canvasY - PADDING) / zoom;
+        return snapshot.height() - (canvasY - PADDING) / zoom;
     }
 
     private int worldLengthToPixels(double worldLength) {
