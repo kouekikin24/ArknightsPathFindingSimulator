@@ -130,12 +130,10 @@ public final class SimulatorWorkbench extends JFrame {
     private final JToggleButton bindToggle = new JToggleButton("束缚");
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
     private final JList<String> checkpointList = new JList<>(checkpointModel);
+    private final ViewportCamera camera = new ViewportCamera(mapScrollPane, canvas, zoomValue);
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
-    private boolean initialMapFitPending = true;
-    private int lastViewportWidth;
-    private int lastViewportHeight;
 
     public SimulatorWorkbench() {
         super("寻路模拟器");
@@ -145,7 +143,7 @@ public final class SimulatorWorkbench extends JFrame {
         setPreferredSize(new Dimension(1180, 760));
         setContentPane(createContent());
         canvas.setShowPath(false);
-        canvas.setZoomChangeListener(this::refreshZoomLabel);
+        canvas.setZoomChangeListener(camera::refreshZoomLabel);
         canvas.setViewportSize(mapScrollPane.getViewport().getWidth(), mapScrollPane.getViewport().getHeight());
         // Space belongs to play/pause: no non-input control may hold keyboard focus.
         playbackRate.setFocusable(false);
@@ -178,7 +176,7 @@ public final class SimulatorWorkbench extends JFrame {
         // owns the window focus and WHEN_IN_FOCUSED_WINDOW keys never fire.
         // The slider is the safe focus owner: it only claims the arrow keys.
         SwingUtilities.invokeLater(timelineSlider::requestFocusInWindow);
-        SwingUtilities.invokeLater(this::updateViewportCamera);
+        SwingUtilities.invokeLater(camera::update);
     }
 
     private JPanel createContent() {
@@ -256,9 +254,7 @@ public final class SimulatorWorkbench extends JFrame {
         panel.add(zoomBar, BorderLayout.NORTH);
         mapScrollPane.setBorder(null);
         mapScrollPane.getViewport().setBackground(canvas.getBackground());
-        mapScrollPane.getViewport().addChangeListener(event -> {
-            updateViewportCamera();
-        });
+        mapScrollPane.getViewport().addChangeListener(event -> camera.update());
         panel.add(mapScrollPane, BorderLayout.CENTER);
         return panel;
     }
@@ -347,13 +343,13 @@ public final class SimulatorWorkbench extends JFrame {
         fresh.setFocusable(false);
         fresh.addActionListener(event -> {
             runEdit(() -> session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner)));
-            requestMapFit();
+            camera.requestFit();
         });
         JButton demo = new JButton("示例");
         demo.setFocusable(false);
         demo.addActionListener(event -> {
             runEdit(session::loadDemoScenario);
-            requestMapFit();
+            camera.requestFit();
         });
         actions.add(fresh);
         actions.add(demo);
@@ -806,7 +802,7 @@ public final class SimulatorWorkbench extends JFrame {
         }
         refresh(session.snapshotFrame());
         if (session.mapWidth() != widthBefore || session.mapHeight() != heightBefore) {
-            requestMapFit();
+            camera.requestFit();
         }
         operationStatus.setText(isUndo ? "已撤销" : "已重做");
     }
@@ -984,7 +980,7 @@ public final class SimulatorWorkbench extends JFrame {
         stopPlayback();
         invalidateSeek();
         refresh(session.snapshotFrame());
-        requestMapFit();
+        camera.requestFit();
         operationStatus.setText("场景已导入：" + chooser.getSelectedFile().getName());
     }
 
@@ -1089,7 +1085,7 @@ public final class SimulatorWorkbench extends JFrame {
             refreshUnitList();
             refreshCheckpointList(snapshot);
             refreshCheckpointControls();
-            refreshZoomLabel();
+            camera.refreshZoomLabel();
         } finally {
             refreshing = false;
         }
@@ -1101,58 +1097,6 @@ public final class SimulatorWorkbench extends JFrame {
             unitModel.addElement("单位 " + (index + 1));
         }
         unitList.setSelectedIndex(session.selectedDraftIndex());
-    }
-
-    private void applyRequestedViewPosition() {
-        canvas.applyRequestedViewPosition();
-    }
-
-    private void updateViewportCamera() {
-        int width = mapScrollPane.getViewport().getWidth();
-        int height = mapScrollPane.getViewport().getHeight();
-        if (width <= 1 || height <= 1) {
-            return;
-        }
-        if (initialMapFitPending) {
-            initialMapFitPending = false;
-            lastViewportWidth = width;
-            lastViewportHeight = height;
-            canvas.setViewportSize(width, height);
-            canvas.setZoom(canvas.fitZoom());
-            mapScrollPane.getViewport().setViewPosition(new Point(0, 0));
-            refreshZoomLabel();
-            return;
-        }
-        if (width == lastViewportWidth && height == lastViewportHeight) {
-            return;
-        }
-        Point oldView = mapScrollPane.getViewport().getViewPosition();
-        int priorWidth = lastViewportWidth;
-        int priorHeight = lastViewportHeight;
-        if (priorWidth <= 1 || priorHeight <= 1) {
-            priorWidth = width;
-            priorHeight = height;
-        }
-        double oldCenterWorldX = canvas.worldXAtCanvas(oldView.x + priorWidth / 2d);
-        double oldCenterWorldY = canvas.worldYAtCanvas(oldView.y + priorHeight / 2d);
-        lastViewportWidth = width;
-        lastViewportHeight = height;
-        canvas.setViewportSize(width, height);
-        canvas.setZoomKeepingWorld(canvas.zoom(), oldCenterWorldX, oldCenterWorldY,
-                new Point(width / 2, height / 2), oldView);
-        applyRequestedViewPosition();
-        refreshZoomLabel();
-    }
-
-    private void requestMapFit() {
-        initialMapFitPending = true;
-        lastViewportWidth = -1;
-        lastViewportHeight = -1;
-        SwingUtilities.invokeLater(this::updateViewportCamera);
-    }
-
-    private void refreshZoomLabel() {
-        zoomValue.setText(String.format(Locale.ROOT, "%.0f%%", canvas.zoomPercent()));
     }
 
     private List<List<UiSnapshot>> trajectoriesThroughFrame(int frame) {
