@@ -10,7 +10,6 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
-import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -26,7 +25,6 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
-import javax.swing.Timer;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.BorderLayout;
@@ -41,16 +39,10 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
-import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -132,6 +124,12 @@ public final class SimulatorWorkbench extends JFrame {
     private final ViewportCamera camera = new ViewportCamera(mapScrollPane, canvas, zoomValue);
     private final PlaybackController playback = new PlaybackController(
             session, playButton, playbackRate, operationStatus, this::refresh);
+    private final ScenarioFiles scenarioFiles = new ScenarioFiles(session, this, operationStatus, () -> {
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        camera.requestFit();
+    });
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
@@ -231,13 +229,13 @@ public final class SimulatorWorkbench extends JFrame {
         toolbar.add(showTrajectoryToggle);
         toolbar.addSeparator(new Dimension(10, 1));
         JButton exportScenarioButton = iconButton("导出场景", "把当前地图与路线保存为可导入的文本文件");
-        exportScenarioButton.addActionListener(event -> exportScenarioFile());
+        exportScenarioButton.addActionListener(event -> scenarioFiles.exportScenario());
         toolbar.add(exportScenarioButton);
         JButton importScenarioButton = iconButton("导入场景", "从文本文件载入地图与路线");
-        importScenarioButton.addActionListener(event -> importScenarioFile());
+        importScenarioButton.addActionListener(event -> scenarioFiles.importScenario());
         toolbar.add(importScenarioButton);
         JButton exportTraceButton = iconButton("导出轨迹", "把已生成帧导出为逐帧 CSV");
-        exportTraceButton.addActionListener(event -> exportTraceFile());
+        exportTraceButton.addActionListener(event -> scenarioFiles.exportTrace());
         toolbar.add(exportTraceButton);
         return toolbar;
     }
@@ -885,55 +883,6 @@ public final class SimulatorWorkbench extends JFrame {
         }
         playback.stop();
         requestSeek(frame);
-    }
-
-    private void exportScenarioFile() {
-        writeChosenFile("scenario.txt", session.exportScenario(), "场景已导出");
-    }
-
-    private void exportTraceFile() {
-        writeChosenFile("trace.csv", session.exportTraceCsv(), "轨迹已导出");
-    }
-
-    private void writeChosenFile(String suggestedName, String content, String successLabel) {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setSelectedFile(new File(suggestedName));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return;
-        }
-        Path target = chooser.getSelectedFile().toPath();
-        try {
-            Files.writeString(target, content, StandardCharsets.UTF_8);
-        } catch (IOException error) {
-            operationStatus.setText("导出失败：" + error.getMessage());
-            return;
-        }
-        operationStatus.setText(successLabel + "：" + target.getFileName());
-    }
-
-    private void importScenarioFile() {
-        JFileChooser chooser = new JFileChooser();
-        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
-            return;
-        }
-        String text;
-        try {
-            text = Files.readString(chooser.getSelectedFile().toPath(), StandardCharsets.UTF_8);
-        } catch (IOException error) {
-            operationStatus.setText("导入失败：" + error.getMessage());
-            return;
-        }
-        try {
-            session.importScenario(text);
-        } catch (IllegalArgumentException error) {
-            operationStatus.setText("导入失败：" + error.getMessage());
-            return;
-        }
-        playback.stop();
-        invalidateSeek();
-        refresh(session.snapshotFrame());
-        camera.requestFit();
-        operationStatus.setText("场景已导入：" + chooser.getSelectedFile().getName());
     }
 
     private void requestSeek(long frame) {
