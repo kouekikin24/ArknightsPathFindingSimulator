@@ -71,7 +71,6 @@ public final class SimulatorWorkbench extends JFrame {
     private final SimulationCanvas canvas = new SimulationCanvas(this::applyEditorTool);
     private final JScrollPane mapScrollPane = new JScrollPane(canvas,
             JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
-    private final Timer playbackTimer = new Timer(33, event -> advancePlayback());
     private final ExecutorService seekExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "simulation-seek");
         thread.setDaemon(true);
@@ -131,13 +130,14 @@ public final class SimulatorWorkbench extends JFrame {
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
     private final JList<String> checkpointList = new JList<>(checkpointModel);
     private final ViewportCamera camera = new ViewportCamera(mapScrollPane, canvas, zoomValue);
+    private final PlaybackController playback = new PlaybackController(
+            session, playButton, playbackRate, operationStatus, this::refresh);
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
 
     public SimulatorWorkbench() {
         super("寻路模拟器");
-        playbackTimer.setCoalesce(true);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(800, 560));
         setPreferredSize(new Dimension(1180, 760));
@@ -207,7 +207,7 @@ public final class SimulatorWorkbench extends JFrame {
         playButton.setToolTipText("运行（空格）");
         playButton.setFocusable(false);
         playButton.setPreferredSize(new Dimension(38, 29));
-        playButton.addActionListener(event -> togglePlayback());
+        playButton.addActionListener(event -> playback.toggle());
         toolbar.add(playButton);
         JButton reset = iconButton("↺", "重置运行（R）");
         reset.addActionListener(event -> resetRun());
@@ -326,7 +326,7 @@ public final class SimulatorWorkbench extends JFrame {
      */
     private void runEdit(Runnable edit) {
         edit.run();
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         refresh(session.snapshotFrame());
     }
@@ -651,7 +651,7 @@ public final class SimulatorWorkbench extends JFrame {
                 return;
             }
             // Scrubbing pauses playback, matching the typed-time seek path.
-            stopPlayback();
+            playback.stop();
             int target = timelineSlider.getValue();
             showTimelineSelection(target);
             if (!timelineSlider.getValueIsAdjusting()) {
@@ -683,7 +683,7 @@ public final class SimulatorWorkbench extends JFrame {
             operationStatus.setText(error);
             return;
         }
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         refresh(session.snapshotFrame());
     }
@@ -765,7 +765,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void stepOneFrame() {
-        stopPlayback();
+        playback.stop();
         if (!session.canTick()) {
             operationStatus.setText("模拟已到达终态");
             return;
@@ -775,7 +775,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void resetRun() {
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         session.resetSimulation();
         refresh(session.snapshotFrame());
@@ -791,7 +791,7 @@ public final class SimulatorWorkbench extends JFrame {
 
     /** Applies one undo or redo; scenario size changes refit the map view. */
     private void historyEdit(boolean isUndo) {
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         int widthBefore = session.mapWidth();
         int heightBefore = session.mapHeight();
@@ -862,7 +862,7 @@ public final class SimulatorWorkbench extends JFrame {
                 speed 20
                 diagonal true
                 """);
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         refresh(session.snapshotFrame());
         return spinnerCanStep(speedSpinner)
@@ -874,54 +874,6 @@ public final class SimulatorWorkbench extends JFrame {
         return spinner.getModel() instanceof SpinnerNumberModel model && model.getNextValue() != null;
     }
 
-    private void togglePlayback() {
-        if (!playButton.isSelected()) {
-            stopPlayback();
-            return;
-        }
-        if (!session.canTick()) {
-            operationStatus.setText("模拟已到达终态");
-            stopPlayback();
-            return;
-        }
-        playButton.setText("Ⅱ");
-        playButton.setToolTipText("暂停（空格）");
-        playbackTimer.start();
-    }
-
-    private void advancePlayback() {
-        UiFrame current = null;
-        try {
-            for (int index = 0; index < framesPerTimerTick(); index++) {
-                current = session.tickFrame();
-                if (session.isTerminal()) {
-                    break;
-                }
-            }
-        } catch (SimulationSession.TerminalStateException terminal) {
-            stopPlayback();
-        }
-        refresh(current == null ? session.snapshotFrame() : current);
-        if (current != null && session.isTerminal()) {
-            stopPlayback();
-        }
-    }
-
-    private void stopPlayback() {
-        playbackTimer.stop();
-        playButton.setSelected(false);
-        playButton.setText("▶");
-        playButton.setToolTipText("运行（空格）");
-    }
-
-    private int framesPerTimerTick() {
-        return switch (playbackRate.getSelectedIndex()) {
-            case 1 -> 3;
-            case 2 -> 10;
-            default -> 1;
-        };
-    }
-
     private void seekFromInput() {
         final long frame;
         try {
@@ -931,7 +883,7 @@ public final class SimulatorWorkbench extends JFrame {
             timeInput.selectAll();
             return;
         }
-        stopPlayback();
+        playback.stop();
         requestSeek(frame);
     }
 
@@ -977,7 +929,7 @@ public final class SimulatorWorkbench extends JFrame {
             operationStatus.setText("导入失败：" + error.getMessage());
             return;
         }
-        stopPlayback();
+        playback.stop();
         invalidateSeek();
         refresh(session.snapshotFrame());
         camera.requestFit();
