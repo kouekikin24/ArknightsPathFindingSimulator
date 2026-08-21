@@ -1054,7 +1054,9 @@ public final class SimulatorWorkbench extends JFrame {
     boolean verifySidebarFits() {
         return speedSpinner.getPreferredSize().width < 120
                 && checkpointSecondsSpinner.getPreferredSize().width < 120
-                && checkpointAreaSpinner.getPreferredSize().width < 120;
+                && checkpointAreaSpinner.getPreferredSize().width < 120
+                && checkpointXSpinner.getPreferredSize().width < 120
+                && spawnXSpinner.getPreferredSize().width < 120;
     }
 
     /** Screenshot-driver hook: advance one frame and repaint. */
@@ -1569,7 +1571,8 @@ public final class SimulatorWorkbench extends JFrame {
         JSpinner spinner = new JSpinner(new SpinnerNumberModel(0.5d, 0.0d,
                 (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d));
         spinner.setEditor(new JSpinner.NumberEditor(spinner, "0.0###"));
-        return cappedEditor(spinner, 5);
+        // Six columns: "1.2222" must stay fully visible while editing.
+        return cappedEditor(spinner, 6);
     }
 
     /** Caps the editor's column width so a huge model maximum never widens the sidebar. */
