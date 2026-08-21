@@ -17,7 +17,6 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.Consumer;
 
 /** World-coordinate map renderer. Every drawing and hit test uses this camera. */
 public final class SimulationCanvas extends JComponent {
@@ -67,7 +66,7 @@ public final class SimulationCanvas extends JComponent {
         return theme.terrain(terrain);
     }
 
-    private final Consumer<UiCell> cellHandler;
+    private final java.util.function.BiConsumer<UiCell, UiPoint> cellHandler;
     private UiSnapshot snapshot;
     private List<UiSnapshot> units = List.of();
     private List<List<UiSnapshot>> trajectories = List.of();
@@ -75,6 +74,8 @@ public final class SimulationCanvas extends JComponent {
     private boolean showTrajectory = true;
     private boolean showCoordinates;
     private boolean browseMode;
+    private boolean spaceDown;
+    private boolean spaceUsedForPan;
     private UiCell lastDraggedCell;
     private Point mapPanStart;
     private Point mapPanViewStart;
@@ -89,7 +90,7 @@ public final class SimulationCanvas extends JComponent {
     private Point requestedViewPosition;
     private Runnable zoomChangeListener = () -> { };
 
-    public SimulationCanvas(Consumer<UiCell> cellHandler) {
+    public SimulationCanvas(java.util.function.BiConsumer<UiCell, UiPoint> cellHandler) {
         this.cellHandler = cellHandler;
         setOpaque(true);
         setBackground(BACKGROUND);
@@ -98,7 +99,12 @@ public final class SimulationCanvas extends JComponent {
         MouseAdapter pointerHandler = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent event) {
-                if (browseMode && javax.swing.SwingUtilities.isLeftMouseButton(event)) {
+                if (javax.swing.SwingUtilities.isMiddleMouseButton(event)
+                        || (javax.swing.SwingUtilities.isLeftMouseButton(event)
+                                && (browseMode || spaceDown))) {
+                    if (spaceDown && javax.swing.SwingUtilities.isLeftMouseButton(event)) {
+                        spaceUsedForPan = true;
+                    }
                     beginMapPan(event);
                     updateHover(event);
                     return;
@@ -112,7 +118,7 @@ public final class SimulationCanvas extends JComponent {
 
             @Override
             public void mouseDragged(MouseEvent event) {
-                if (browseMode && mapPanStart != null) {
+                if (mapPanStart != null) {
                     panMap(event);
                     updateHover(event);
                     return;
@@ -223,6 +229,18 @@ public final class SimulationCanvas extends JComponent {
         mapPanStart = null;
         mapPanViewStart = null;
         setCursor(Cursor.getPredefinedCursor(value ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+    }
+
+    /** Space held: left-drag pans instead of editing, under any tool. */
+    public void setSpaceDown(boolean value) {
+        spaceDown = value;
+    }
+
+    /** Whether the current space hold already panned the map; consumed on space release. */
+    public boolean consumeSpacePanUsed() {
+        boolean used = spaceUsedForPan;
+        spaceUsedForPan = false;
+        return used;
     }
 
     /** Flashes a refused edit target so a rejected placement is visible, not silent. */
@@ -690,21 +708,25 @@ public final class SimulationCanvas extends JComponent {
             drawMarker(canvas, snapshot.spawn(), SPAWN, "S", false);
             for (int index = 0; index < snapshot.checkpoints().size(); index++) {
                 UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
-                if (checkpoint.cell() == null) {
+                if (checkpoint.point() == null) {
                     continue;
                 }
-                drawMarker(canvas, checkpoint.cell().center(), CHECKPOINT,
+                drawMarker(canvas, checkpoint.point(), CHECKPOINT,
                         Integer.toString(index + 1), true);
             }
         }
         drawMarker(canvas, snapshot.endpoint(), ENDPOINT, "E", false);
         if (snapshot.target() != null) {
+            // Waypoint ring: dashed and hollow with a center dot, so it never
+            // reads as one of the solid, numbered checkpoint diamonds.
             int x = worldToCanvasX(snapshot.target().x());
             int y = worldToCanvasY(snapshot.target().y());
-            int radius = Math.max(6, worldLengthToPixels(0.14d));
+            int radius = Math.max(5, worldLengthToPixels(0.10d));
             canvas.setColor(new Color(32, 104, 95));
-            canvas.setStroke(new BasicStroke(Math.max(1.5f, (float) (zoom * 0.045d))));
+            canvas.setStroke(new BasicStroke(Math.max(1.5f, (float) (zoom * 0.04d)),
+                    BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, new float[]{5f, 4f}, 0f));
             canvas.drawOval(x - radius, y - radius, radius * 2, radius * 2);
+            canvas.fillOval(x - 2, y - 2, 4, 4);
         }
     }
 
@@ -828,7 +850,11 @@ public final class SimulationCanvas extends JComponent {
             return;
         }
         lastDraggedCell = cell;
-        cellHandler.accept(cell);
+        // Route-point tools want the exact world coordinate under the pointer;
+        // cell tools ignore the second argument.
+        UiPoint point = new UiPoint((float) canvasToWorldX(event.getX()),
+                (float) canvasToWorldY(event.getY()));
+        cellHandler.accept(cell, point);
     }
 
     private int worldToCanvasX(double worldX) {

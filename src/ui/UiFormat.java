@@ -13,11 +13,10 @@ final class UiFormat {
     }
 
     private static String checkpointDetail(UiCheckpoint checkpoint) {
-        if (checkpoint.cell() != null) {
-            // A checkpoint is a point in the core: show the cell center, the
-            // same coordinate the marker and the route target actually use.
-            UiPoint center = checkpoint.cell().center();
-            return String.format(Locale.ROOT, "(%.1f, %.1f)", center.x(), center.y());
+        if (checkpoint.point() != null) {
+            // Points are exact world coordinates; show up to 4 decimals, trimmed.
+            return "(" + coordinate(checkpoint.point().x()) + ", "
+                    + coordinate(checkpoint.point().y()) + ")";
         }
         if (checkpoint.type().usesSeconds()) {
             return String.format(Locale.ROOT, "%.1f s", checkpoint.value());
@@ -26,6 +25,20 @@ final class UiFormat {
             return checkpoint.area() + " 区";
         }
         return "";
+    }
+
+    /** Up to 4 decimals with trailing zeros stripped: 5.5 stays "5.5", 6.0 becomes "6". */
+    private static String coordinate(float value) {
+        String text = String.format(Locale.ROOT, "%.4f", (double) value);
+        int dot = text.indexOf('.');
+        if (dot < 0) {
+            return text;
+        }
+        int end = text.length();
+        while (end > dot + 1 && text.charAt(end - 1) == '0') {
+            end--;
+        }
+        return end == dot + 1 ? text.substring(0, dot) : text.substring(0, end);
     }
 
     static String checkpointLabel(UiSnapshot snapshot) {

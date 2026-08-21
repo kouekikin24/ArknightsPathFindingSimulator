@@ -6,18 +6,18 @@ import java.util.List;
  * format is line-oriented key/value text so files stay diff-friendly:
  *
  * <pre>
- *   # arknights pathfinding scenario v3
+ *   # arknights pathfinding scenario v4
  *   map 12 8
  *   unit 1
- *   spawn 1 1
- *   endpoint 10 6
+ *   spawn 1.5 1.5
+ *   endpoint 10.5 6.5
  *   movement GROUND
  *   speed 1.0
  *   diagonal true
- *   checkpoint MOVE 5 1
+ *   checkpoint MOVE 5.5 1.5
  *   unit 2
- *   spawn 2 2
- *   endpoint 8 6
+ *   spawn 2.5 2.5
+ *   endpoint 8.5 6.5
  *   movement FLYING
  *   speed 2.0
  *   diagonal false
@@ -25,15 +25,18 @@ import java.util.List;
  * </pre>
  *
  * Only non-OPEN terrain cells are listed. Each {@code unit <n>} line starts
- * the next route block; files without any unit line (v2) describe a single
- * implicit unit. Checkpoint lines carry the type name plus its cell, seconds,
- * or area argument; bare "checkpoint x y" lines from v1 files are still read
- * as MOVE. Parsing rejects unknown or misplaced lines with their line number
- * instead of ignoring them silently.
+ * the next route block. Version compatibility: v4 (this writer) stores route
+ * points as decimal world coordinates; older files stored integer grid cells
+ * and are converted to cell centers on load. Files without any unit line (v2)
+ * describe a single implicit unit; bare "checkpoint x y" lines from v1 files
+ * are still read as MOVE. Parsing rejects unknown or misplaced lines with
+ * their line number instead of ignoring them silently.
  */
 final class ScenarioCodec {
     static final int MINIMUM_DIMENSION = 2;
     static final int MAXIMUM_DIMENSION = 512;
+    /** Header token that marks decimal route-point coordinates (v4 and later). */
+    private static final String DECIMAL_HEADER = "# arknights pathfinding scenario v4";
 
     private ScenarioCodec() {
     }
@@ -41,7 +44,7 @@ final class ScenarioCodec {
     record TerrainEntry(UiCell cell, UiTerrain terrain) {
     }
 
-    record UnitSpec(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+    record UnitSpec(UiPoint spawn, UiPoint endpoint, List<UiCheckpoint> checkpoints,
                     UiMovementMode movementMode, float speed, boolean allowDiagonalMove) {
     }
 
@@ -50,23 +53,23 @@ final class ScenarioCodec {
 
     static String format(int width, int height, List<UiTerrain> terrain, List<UnitSpec> units) {
         StringBuilder text = new StringBuilder();
-        text.append("# arknights pathfinding scenario v3\n");
+        text.append(DECIMAL_HEADER).append('\n');
         text.append("map ").append(width).append(' ').append(height).append('\n');
         for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
             UnitSpec unit = units.get(unitIndex);
             text.append("unit ").append(unitIndex + 1).append('\n');
-            text.append("spawn ").append(unit.spawn().x()).append(' ')
-                    .append(unit.spawn().y()).append('\n');
-            text.append("endpoint ").append(unit.endpoint().x()).append(' ')
-                    .append(unit.endpoint().y()).append('\n');
+            text.append("spawn ").append(Float.toString(unit.spawn().x())).append(' ')
+                    .append(Float.toString(unit.spawn().y())).append('\n');
+            text.append("endpoint ").append(Float.toString(unit.endpoint().x())).append(' ')
+                    .append(Float.toString(unit.endpoint().y())).append('\n');
             text.append("movement ").append(unit.movementMode().name()).append('\n');
             text.append("speed ").append(Float.toString(unit.speed())).append('\n');
             text.append("diagonal ").append(unit.allowDiagonalMove()).append('\n');
             for (UiCheckpoint checkpoint : unit.checkpoints()) {
                 text.append("checkpoint ").append(checkpoint.type().name());
-                if (checkpoint.cell() != null) {
-                    text.append(' ').append(checkpoint.cell().x()).append(' ')
-                            .append(checkpoint.cell().y());
+                if (checkpoint.point() != null) {
+                    text.append(' ').append(Float.toString(checkpoint.point().x())).append(' ')
+                            .append(Float.toString(checkpoint.point().y()));
                 } else if (checkpoint.type().usesSeconds()) {
                     text.append(' ').append(Float.toString(checkpoint.value()));
                 } else if (checkpoint.type().usesArea()) {
@@ -102,6 +105,20 @@ final class ScenarioCodec {
         UnitBuilder current = null;
 
         String[] lines = text.split("\\R", -1);
+        // Without the v4 header, route points are integer grid cells and load
+        // as their centers; terrain is cell-based in every version.
+        boolean decimalPoints = false;
+        for (String raw : lines) {
+            String line = raw.strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (line.startsWith("#")) {
+                decimalPoints = line.startsWith(DECIMAL_HEADER);
+                break;
+            }
+            break;
+        }
         for (int index = 0; index < lines.length; index++) {
             String line = lines[index].strip();
             if (line.isEmpty() || line.startsWith("#")) {
@@ -145,14 +162,16 @@ final class ScenarioCodec {
                     if (current.spawn != null) {
                         throw duplicate("spawn", lineNumber);
                     }
-                    current.spawn = parseCell(parts[1], parts[2], width, height, lineNumber);
+                    current.spawn = parsePoint(parts[1], parts[2], width, height, decimalPoints,
+                            lineNumber);
                 }
                 case "endpoint" -> {
                     requireParts(parts, 3, "endpoint <x> <y>", lineNumber);
                     if (current.endpoint != null) {
                         throw duplicate("endpoint", lineNumber);
                     }
-                    current.endpoint = parseCell(parts[1], parts[2], width, height, lineNumber);
+                    current.endpoint = parsePoint(parts[1], parts[2], width, height, decimalPoints,
+                            lineNumber);
                 }
                 case "movement" -> {
                     requireParts(parts, 2, "movement GROUND|FLYING", lineNumber);
@@ -188,19 +207,24 @@ final class ScenarioCodec {
                 case "checkpoint" -> {
                     UiCheckpoint checkpoint;
                     if (parts.length == 3 && isInteger(parts[1]) && isInteger(parts[2])) {
-                        // Legacy v1 lines carried bare coordinates and meant MOVE.
-                        checkpoint = UiCheckpoint.move(parseCell(parts[1], parts[2], width, height, lineNumber));
+                        // Legacy v1 lines carried bare cell coordinates and meant MOVE.
+                        checkpoint = UiCheckpoint.move(
+                                parsePoint(parts[1], parts[2], width, height, decimalPoints,
+                                        lineNumber));
                     } else {
                         if (parts.length < 2) {
                             throw new IllegalArgumentException(
                                     "Expected 'checkpoint <TYPE> [arguments]' at line " + lineNumber);
                         }
-                        checkpoint = parseCheckpointBody(parts, width, height, lineNumber);
+                        checkpoint = parseCheckpointBody(parts, width, height, decimalPoints,
+                                lineNumber);
                     }
-                    if (checkpoint.cell() != null && containsCell(current.checkpoints, checkpoint.cell())) {
+                    if (checkpoint.point() != null
+                            && containsPoint(current.checkpoints, checkpoint.point())) {
+                        UiCell cell = new UiCell((int) Math.floor(checkpoint.point().x()),
+                                (int) Math.floor(checkpoint.point().y()));
                         throw new IllegalArgumentException("Duplicate checkpoint at cell ("
-                                + checkpoint.cell().x() + ", " + checkpoint.cell().y()
-                                + ") at line " + lineNumber);
+                                + cell.x() + ", " + cell.y() + ") at line " + lineNumber);
                     }
                     current.checkpoints.add(checkpoint);
                 }
@@ -234,8 +258,8 @@ final class ScenarioCodec {
 
     /** Mutable parse buffer for one unit block; finalized into an immutable UnitSpec. */
     private static final class UnitBuilder {
-        private UiCell spawn;
-        private UiCell endpoint;
+        private UiPoint spawn;
+        private UiPoint endpoint;
         private final List<UiCheckpoint> checkpoints = new ArrayList<>();
         private UiMovementMode movementMode;
         private Float speed;
@@ -243,7 +267,7 @@ final class ScenarioCodec {
 
         private UnitSpec build(int lineNumber) {
             if (spawn == null || endpoint == null) {
-                throw new IllegalArgumentException("A unit needs spawn and endpoint cells (near line "
+                throw new IllegalArgumentException("A unit needs spawn and endpoint points (near line "
                         + lineNumber + ")");
             }
             if (movementMode == null || speed == null || diagonal == null) {
@@ -255,11 +279,12 @@ final class ScenarioCodec {
     }
 
     private static UiCheckpoint parseCheckpointBody(String[] parts, int width, int height,
-                                                    int lineNumber) {
+                                                    boolean decimalPoints, int lineNumber) {
         UiCheckpointType type = parseCheckpointType(parts[1], lineNumber);
         if (type.hasPoint()) {
             requireParts(parts, 4, "checkpoint " + type.name() + " <x> <y>", lineNumber);
-            return type.create(parseCell(parts[2], parts[3], width, height, lineNumber));
+            return type.create(parsePoint(parts[2], parts[3], width, height, decimalPoints,
+                    lineNumber));
         }
         if (type.usesSeconds()) {
             requireParts(parts, 3, "checkpoint " + type.name() + " <seconds>", lineNumber);
@@ -292,9 +317,15 @@ final class ScenarioCodec {
         throw new IllegalArgumentException("Unknown checkpoint type '" + token + "' at line " + lineNumber);
     }
 
-    private static boolean containsCell(List<UiCheckpoint> checkpoints, UiCell cell) {
+    private static boolean containsPoint(List<UiCheckpoint> checkpoints, UiPoint point) {
+        UiCell cell = new UiCell((int) Math.floor(point.x()), (int) Math.floor(point.y()));
         for (UiCheckpoint checkpoint : checkpoints) {
-            if (cell.equals(checkpoint.cell())) {
+            if (checkpoint.point() == null) {
+                continue;
+            }
+            UiCell other = new UiCell((int) Math.floor(checkpoint.point().x()),
+                    (int) Math.floor(checkpoint.point().y()));
+            if (cell.equals(other)) {
                 return true;
             }
         }
@@ -336,6 +367,38 @@ final class ScenarioCodec {
         } catch (NumberFormatException error) {
             throw new IllegalArgumentException(
                     label + " '" + token + "' is not an integer at line " + lineNumber, error);
+        }
+    }
+
+    /**
+     * Route points: v4 files carry decimal world coordinates; older files
+     * carry integer grid cells which map to cell centers.
+     */
+    private static UiPoint parsePoint(String xToken, String yToken, int width, int height,
+                                      boolean decimalPoints, int lineNumber) {
+        if (!decimalPoints) {
+            UiCell cell = parseCell(xToken, yToken, width, height, lineNumber);
+            return cell.center();
+        }
+        float x = parseCoordinate(xToken, lineNumber);
+        float y = parseCoordinate(yToken, lineNumber);
+        if (x < 0f || x > width || y < 0f || y > height) {
+            throw new IllegalArgumentException(
+                    "Point (" + x + ", " + y + ") is outside the map at line " + lineNumber);
+        }
+        return new UiPoint(x, y);
+    }
+
+    private static float parseCoordinate(String token, int lineNumber) {
+        try {
+            float value = Float.parseFloat(token);
+            if (!Float.isFinite(value)) {
+                throw new NumberFormatException("not finite");
+            }
+            return value;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException(
+                    "Coordinate '" + token + "' is not a finite number at line " + lineNumber, error);
         }
     }
 

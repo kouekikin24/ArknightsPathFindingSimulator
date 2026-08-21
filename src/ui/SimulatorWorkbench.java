@@ -125,9 +125,17 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner checkpointAreaSpinner = cappedEditor(
             new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5);
     private final JSpinner checkpointXSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.5d, ScenarioCodec.MAXIMUM_DIMENSION - 0.5d, 1.0d)), 4);
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
     private final JSpinner checkpointYSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.5d, ScenarioCodec.MAXIMUM_DIMENSION - 0.5d, 1.0d)), 4);
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
+    private final JSpinner spawnXSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
+    private final JSpinner spawnYSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
+    private final JSpinner endpointXSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
+    private final JSpinner endpointYSpinner = cappedEditor(
+            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
     private JLabel checkpointCoordLabel;
     private JPanel checkpointCoordPanel;
     private final JButton addCheckpointButton = new JButton("添加");
@@ -459,17 +467,78 @@ public final class SimulatorWorkbench extends JFrame {
 
     private JPanel createToolSection() {
         JPanel section = section("编辑");
-        section.setLayout(new GridLayout(2, 4, 4, 4));
+        section.setLayout(new GridBagLayout());
+        section.setOpaque(false);
+        JPanel tools = new JPanel(new GridLayout(2, 4, 4, 4));
+        tools.setOpaque(false);
         ButtonGroup group = new ButtonGroup();
-        section.add(toolButton(group, EditorTool.OPEN, new SwatchIcon(canvas, UiTerrain.OPEN), "通路"));
-        section.add(toolButton(group, EditorTool.BOX, new SwatchIcon(canvas, UiTerrain.BOX), "箱子"));
-        section.add(toolButton(group, EditorTool.PIT, new SwatchIcon(canvas, UiTerrain.PIT), "坑"));
-        section.add(toolButton(group, EditorTool.WALL, new SwatchIcon(canvas, UiTerrain.WALL), "墙"));
-        section.add(toolButton(group, EditorTool.SPAWN, "S", "起点"));
-        section.add(toolButton(group, EditorTool.ENDPOINT, "E", "终点"));
-        section.add(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"));
-        section.add(toolButton(group, EditorTool.BROWSE, "浏览", "浏览地图：左键拖动平移"));
+        tools.add(toolButton(group, EditorTool.OPEN, new SwatchIcon(canvas, UiTerrain.OPEN), "通路"));
+        tools.add(toolButton(group, EditorTool.BOX, new SwatchIcon(canvas, UiTerrain.BOX), "箱子"));
+        tools.add(toolButton(group, EditorTool.PIT, new SwatchIcon(canvas, UiTerrain.PIT), "坑"));
+        tools.add(toolButton(group, EditorTool.WALL, new SwatchIcon(canvas, UiTerrain.WALL), "墙"));
+        tools.add(toolButton(group, EditorTool.SPAWN, "S", "起点"));
+        tools.add(toolButton(group, EditorTool.ENDPOINT, "E", "终点"));
+        tools.add(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"));
+        tools.add(toolButton(group, EditorTool.BROWSE, "浏览",
+                "浏览地图：左键拖动平移（任意工具下中键或空格+左键也可平移）"));
+        GridBagConstraints c = baseConstraints();
+        c.gridx = 0;
+        c.gridy = 0;
+        c.gridwidth = 2;
+        c.weightx = 1d;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        section.add(tools, c);
+        addRoutePointRow(section, 1, "起点", spawnXSpinner, spawnYSpinner, true);
+        addRoutePointRow(section, 2, "终点", endpointXSpinner, endpointYSpinner, false);
         return section;
+    }
+
+    /** Numeric spawn/endpoint entry: spinners commit exact decimal coordinates. */
+    private void addRoutePointRow(JPanel section, int row, String label,
+                                  JSpinner xSpinner, JSpinner ySpinner, boolean spawn) {
+        GridBagConstraints c = baseConstraints();
+        JLabel name = new JLabel(label);
+        name.setForeground(LABEL_TEXT);
+        c.gridx = 0;
+        c.gridy = row;
+        c.gridwidth = 1;
+        c.weightx = 0d;
+        c.fill = GridBagConstraints.NONE;
+        section.add(name, c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        JPanel rowPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        rowPanel.setOpaque(false);
+        rowPanel.add(xSpinner);
+        JLabel comma = new JLabel(",");
+        comma.setForeground(LABEL_TEXT);
+        rowPanel.add(comma);
+        rowPanel.add(ySpinner);
+        section.add(rowPanel, c);
+        String pointLabel = spawn ? "起点" : "终点";
+        xSpinner.setToolTipText(pointLabel + " X 坐标（世界坐标，可为小数）");
+        ySpinner.setToolTipText(pointLabel + " Y 坐标（世界坐标，可为小数）");
+        javax.swing.event.ChangeListener commit = event -> {
+            if (refreshing) {
+                return;
+            }
+            UiPoint point = new UiPoint(floatValue(xSpinner), floatValue(ySpinner));
+            try {
+                runEdit(() -> {
+                    if (spawn) {
+                        session.placeSpawn(point);
+                    } else {
+                        session.placeEndpoint(point);
+                    }
+                });
+            } catch (IllegalArgumentException error) {
+                operationStatus.setText("无法移动" + pointLabel + "：" + error.getMessage());
+                refresh(session.snapshotFrame());
+            }
+        };
+        xSpinner.addChangeListener(commit);
+        ySpinner.addChangeListener(commit);
     }
 
     private JPanel createRuntimeSection() {
@@ -634,9 +703,9 @@ public final class SimulatorWorkbench extends JFrame {
             checkpointTypeBox.setSelectedItem(selected.type());
             checkpointSecondsSpinner.setValue((double) selected.value());
             checkpointAreaSpinner.setValue(selected.area());
-            if (selected.cell() != null) {
-                checkpointXSpinner.setValue((double) selected.cell().center().x());
-                checkpointYSpinner.setValue((double) selected.cell().center().y());
+            if (selected.point() != null) {
+                checkpointXSpinner.setValue((double) selected.point().x());
+                checkpointYSpinner.setValue((double) selected.point().y());
             }
         });
         section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
@@ -720,21 +789,15 @@ public final class SimulatorWorkbench extends JFrame {
         timeInput.addActionListener(event -> seekFromInput());
     }
 
-    private void applyEditorTool(UiCell cell) {
+    private void applyEditorTool(UiCell cell, UiPoint point) {
         String error = switch (selectedTool) {
             case OPEN -> terrainError(cell, UiTerrain.OPEN);
             case BOX -> terrainError(cell, UiTerrain.BOX);
             case PIT -> terrainError(cell, UiTerrain.PIT);
             case WALL -> terrainError(cell, UiTerrain.WALL);
-            case SPAWN -> {
-                session.placeSpawn(cell);
-                yield null;
-            }
-            case ENDPOINT -> {
-                session.placeEndpoint(cell);
-                yield null;
-            }
-            case CHECKPOINT -> checkpointError(cell);
+            case SPAWN -> spawnError(point);
+            case ENDPOINT -> endpointError(point);
+            case CHECKPOINT -> checkpointError(point);
             case BROWSE -> null;
         };
         if (error != null) {
@@ -747,17 +810,36 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
     }
 
+    /** Like terrainError/checkpointError: a refused placement reports why, never throws. */
+    private String spawnError(UiPoint point) {
+        try {
+            session.placeSpawn(point);
+            return null;
+        } catch (IllegalArgumentException failure) {
+            return "无法放置起点：" + failure.getMessage();
+        }
+    }
+
+    private String endpointError(UiPoint point) {
+        try {
+            session.placeEndpoint(point);
+            return null;
+        } catch (IllegalArgumentException failure) {
+            return "无法放置终点：" + failure.getMessage();
+        }
+    }
+
     private String terrainError(UiCell cell, UiTerrain value) {        return session.setTerrain(cell, value) ? null
                 : "该格已被起点、终点或检查点占用，不能放置地形";
     }
 
-    private String checkpointError(UiCell cell) {
+    private String checkpointError(UiPoint point) {
         UiCheckpointType type = selectedCheckpointType();
         if (!type.hasPoint()) {
             return type.label() + "没有坐标，请用检查点面板的“添加”按钮";
         }
         try {
-            session.addCheckpoint(newCheckpointOfType(type, cell));
+            session.addCheckpoint(newCheckpointOfType(type, point));
         } catch (IllegalArgumentException failure) {
             return "无法添加：" + failure.getMessage();
         }
@@ -769,8 +851,8 @@ public final class SimulatorWorkbench extends JFrame {
         return type == null ? UiCheckpointType.MOVE : type;
     }
 
-    private UiCheckpoint newCheckpointOfType(UiCheckpointType type, UiCell cell) {
-        return type.create(cell, floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner));
+    private UiCheckpoint newCheckpointOfType(UiCheckpointType type, UiPoint point) {
+        return type.create(point, floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner));
     }
 
     private void addCheckpointFromPanel() {
@@ -801,10 +883,10 @@ public final class SimulatorWorkbench extends JFrame {
         }
         try {
             UiCheckpointType type = selectedCheckpointType();
-            UiCell cell = type.hasPoint()
-                    ? new UiCell(cellCoord(checkpointXSpinner), cellCoord(checkpointYSpinner))
+            UiPoint point = type.hasPoint()
+                    ? new UiPoint(floatValue(checkpointXSpinner), floatValue(checkpointYSpinner))
                     : null;
-            runEdit(() -> session.updateCheckpoint(index, type, cell,
+            runEdit(() -> session.updateCheckpoint(index, type, point,
                     floatValue(checkpointSecondsSpinner), intValue(checkpointAreaSpinner)));
         } catch (IllegalArgumentException error) {
             operationStatus.setText("无法更新：" + error.getMessage());
@@ -876,7 +958,26 @@ public final class SimulatorWorkbench extends JFrame {
         shortcut(keys, actions, "undo-edit", KeyStroke.getKeyStroke("control Z"), this::undoEdit);
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control Y"), this::redoEdit);
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control shift Z"), this::redoEdit);
-        shortcut(keys, actions, "toggle-playback", KeyStroke.getKeyStroke("SPACE"), playButton::doClick);
+        // Space pans the map while held; play/pause fires on release only when
+        // the hold was not used for panning. Key auto-repeat is ignored.
+        shortcut(keys, actions, "space-pressed", KeyStroke.getKeyStroke("pressed SPACE"), () -> {
+            canvas.setSpaceDown(true);
+        });
+        // The released binding clears the pan flag even when focus sits in a
+        // text field, so a space press can never get stuck on.
+        keys.put(KeyStroke.getKeyStroke("released SPACE"), "space-released");
+        actions.put("space-released", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                canvas.setSpaceDown(false);
+                boolean panned = canvas.consumeSpacePanUsed();
+                if (!panned && globalShortcutAllowed(
+                        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                                .getFocusOwner())) {
+                    playButton.doClick();
+                }
+            }
+        });
         // Pressed-form strokes: the char overload would create KEY_TYPED bindings
         // that only match the exact typed case ('N' vs the user's 'n').
         shortcut(keys, actions, "step-frame", KeyStroke.getKeyStroke(KeyEvent.VK_N, 0), this::stepOneFrame);
@@ -942,6 +1043,62 @@ public final class SimulatorWorkbench extends JFrame {
         return speedSpinner.getPreferredSize().width < 120
                 && checkpointSecondsSpinner.getPreferredSize().width < 120
                 && checkpointAreaSpinner.getPreferredSize().width < 120;
+    }
+
+    /** Screenshot-driver hook: advance one frame and repaint. */
+    void sessionTickForShot() {
+        session.tick();
+        refresh(session.snapshotFrame());
+    }
+
+    /**
+     * Verify hook: playback refreshes must preserve the checkpoint list
+     * selection, otherwise 更新 is unusable while playing.
+     */
+    boolean verifyCheckpointSelectionSurvivesRefresh() {
+        session.loadDemoScenario();
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        checkpointList.setSelectedIndex(1);
+        session.tick();
+        refresh(session.snapshotFrame());
+        return checkpointList.getSelectedIndex() == 1;
+    }
+
+    /** Verify hook: refused spawn/endpoint placements report an error, never throw. */
+    boolean verifyRoutePointRejectionFeedback() {
+        UiPoint checkpointCell = session.snapshot().checkpoints().get(0).point();
+        String spawnMessage = spawnError(checkpointCell);
+        String endpointMessage = endpointError(session.snapshot().spawn());
+        if (spawnMessage == null || endpointMessage == null) {
+            return false;
+        }
+        // The demo spawn must be untouched by the refused moves above.
+        return session.snapshot().spawn().x() == 1.5f && session.snapshot().spawn().y() == 1.5f;
+    }
+
+    /** Verify hook: the decimal checkpoint flow keeps exact coordinates end to end. */
+    boolean verifyDecimalCheckpointFlow() {
+        session.newScenario(8, 3);
+        selectedTool = EditorTool.CHECKPOINT;
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        applyEditorTool(new UiCell(6, 1), new UiPoint(6.5f, 1.1222f));
+        List<UiCheckpoint> checkpoints = session.snapshot().checkpoints();
+        if (checkpoints.size() != 1 || checkpoints.get(0).point() == null
+                || Math.abs(checkpoints.get(0).point().y() - 1.1222f) > 0f) {
+            return false;
+        }
+        String text = session.exportScenario();
+        session.newScenario(8, 3);
+        session.importScenario(text);
+        selectedTool = EditorTool.OPEN;
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        return Math.abs(session.snapshot().checkpoints().get(0).point().y() - 1.1222f) <= 0f;
     }
 
     // ----- theming -----------------------------------------------------------
@@ -1131,6 +1288,10 @@ public final class SimulatorWorkbench extends JFrame {
             movementModeBox.setSelectedItem(snapshot.movementMode());
             speedSpinner.setValue((double) snapshot.attributeSpeed());
             diagonalToggle.setSelected(snapshot.allowDiagonalMove());
+            spawnXSpinner.setValue((double) snapshot.spawn().x());
+            spawnYSpinner.setValue((double) snapshot.spawn().y());
+            endpointXSpinner.setValue((double) snapshot.endpoint().x());
+            endpointYSpinner.setValue((double) snapshot.endpoint().y());
             canvas.setSnapshot(snapshot);
             canvas.setUnits(frame.units());
             canvas.setTrajectories(showTrajectoryToggle.isSelected()
@@ -1193,13 +1354,19 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private void refreshCheckpointList(UiSnapshot snapshot) {
+        // Model rebuilds clear the JList selection (a clear() is a removal).
+        // Remember and restore it so playback ticks never steal the user's
+        // selected row; the echo listener above skips while refreshing.
+        int selected = checkpointList.getSelectedIndex();
         checkpointModel.clear();
         for (int index = 0; index < snapshot.checkpoints().size(); index++) {
             UiCheckpoint checkpoint = snapshot.checkpoints().get(index);
             checkpointModel.addElement(UiFormat.checkpointRow(index, checkpoint,
                     index == snapshot.activeCheckpoint()));
         }
-        // The user's selection is never touched: progress shows as the ▶ marker.
+        if (selected >= 0 && selected < checkpointModel.size()) {
+            checkpointList.setSelectedIndex(selected);
+        }
     }
 
     private void refreshCheckpointControls() {
@@ -1322,11 +1489,6 @@ public final class SimulatorWorkbench extends JFrame {
 
     private static int intValue(JSpinner spinner) {
         return ((Number) spinner.getValue()).intValue();
-    }
-
-    /** The coordinate spinners edit the center point; the owned cell is its floor. */
-    private static int cellCoord(JSpinner spinner) {
-        return (int) Math.floor(((Number) spinner.getValue()).doubleValue());
     }
 
     private static float floatValue(JSpinner spinner) {

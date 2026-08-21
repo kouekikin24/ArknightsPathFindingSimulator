@@ -50,14 +50,14 @@ public enum UiCheckpointType {
     /**
      * The single type-to-construction mapping: every editor/codec construction
      * of a checkpoint goes through here so a new type is added in one place.
-     * The cell is required iff hasPoint(); seconds/area are ignored unless the
+     * The point is required iff hasPoint(); seconds/area are ignored unless the
      * type uses them.
      */
-    public UiCheckpoint create(UiCell cell, float seconds, int area) {
+    public UiCheckpoint create(UiPoint point, float seconds, int area) {
         return switch (this) {
-            case MOVE -> UiCheckpoint.move(cell);
-            case PATROL_MOVE -> UiCheckpoint.patrolMove(cell);
-            case APPEAR_AT_POS -> UiCheckpoint.appearAt(cell);
+            case MOVE -> UiCheckpoint.move(point);
+            case PATROL_MOVE -> UiCheckpoint.patrolMove(point);
+            case APPEAR_AT_POS -> UiCheckpoint.appearAt(point);
             case WAIT_FOR_SECONDS -> UiCheckpoint.waitForSeconds(seconds);
             case WAIT_FOR_PLAY_TIME -> UiCheckpoint.waitForPlayTime(seconds);
             case WAIT_CURRENT_FRAGMENT_TIME -> UiCheckpoint.waitForFragmentTime(seconds);
@@ -68,7 +68,7 @@ public enum UiCheckpointType {
         };
     }
 
-    public UiCheckpoint create(UiCell cell) {
-        return create(cell, 0f, 0);
+    public UiCheckpoint create(UiPoint point) {
+        return create(point, 0f, 0);
     }
 }

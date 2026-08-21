@@ -70,6 +70,7 @@ public final class SimulatorUiMain {
         verifyMultiUnit();
         verifyUndoRedo();
         verifyScenarioCodecRejection();
+        verifyDecimalScenarioCodec();
         verifyTimeParsingEdges();
         verifyTraceCsvExport();
         verifyCheckpointArgumentValidation();
@@ -100,7 +101,7 @@ public final class SimulatorUiMain {
                 List.of(), false);
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(canvas.fitZoom());
@@ -154,7 +155,7 @@ public final class SimulatorUiMain {
     private static void verifyTheme(UiSnapshot snapshot) {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(canvas.fitZoom());
@@ -195,7 +196,7 @@ public final class SimulatorUiMain {
     private static void verifyCoordinateLabels(UiSnapshot snapshot) {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(40d);
@@ -284,6 +285,18 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "A wide spinner maximum clipped the sidebar horizontally");
                 }
+                if (!workbench.verifyCheckpointSelectionSurvivesRefresh()) {
+                    throw new IllegalStateException(
+                            "A playback refresh stole the checkpoint list selection");
+                }
+                if (!workbench.verifyRoutePointRejectionFeedback()) {
+                    throw new IllegalStateException(
+                            "Refused spawn/endpoint placement lacked feedback or moved the point");
+                }
+                if (!workbench.verifyDecimalCheckpointFlow()) {
+                    throw new IllegalStateException(
+                            "Decimal checkpoint coordinates changed across canvas and codec");
+                }
             });
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -319,14 +332,28 @@ public final class SimulatorUiMain {
     }
 
     private static void verifyRoutePointOverlap() {
-        SimulationSession session = new SimulationSession(); // demo: spawn(1,1) endpoint(10,6) checkpoints(5,1)(5,5)
-        expectRejection(() -> session.placeSpawn(new UiCell(10, 6)), "spawn on endpoint");
-        expectRejection(() -> session.placeSpawn(new UiCell(5, 1)), "spawn on checkpoint");
-        expectRejection(() -> session.placeEndpoint(new UiCell(1, 1)), "endpoint on spawn");
-        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiCell(1, 1))), "checkpoint on spawn");
-        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiCell(10, 6))), "checkpoint on endpoint");
-        // A free cell is still accepted.
-        session.addCheckpoint(UiCheckpoint.move(new UiCell(2, 2)));
+        // Demo: spawn (1.5,1.5), endpoint (10.5,6.5), checkpoints (5.5,1.5) (5.5,5.5).
+        SimulationSession session = new SimulationSession();
+        expectRejection(() -> session.placeSpawn(new UiPoint(10.5f, 6.5f)), "spawn on endpoint");
+        expectRejection(() -> session.placeSpawn(new UiPoint(5.5f, 1.5f)), "spawn on checkpoint");
+        expectRejection(() -> session.placeEndpoint(new UiPoint(1.5f, 1.5f)), "endpoint on spawn");
+        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiPoint(1.5f, 1.5f))),
+                "checkpoint on spawn");
+        expectRejection(() -> session.addCheckpoint(UiCheckpoint.move(new UiPoint(10.5f, 6.5f))),
+                "checkpoint on endpoint");
+        // Overlap is judged by the cell a point falls in: any decimal inside
+        // the occupied cell is refused, the neighbouring cell is accepted.
+        expectRejection(() -> session.placeSpawn(new UiPoint(5.9f, 1.2f)),
+                "decimal spawn inside checkpoint cell");
+        session.placeSpawn(new UiPoint(6.2f, 1.8f));
+        session.placeSpawn(new UiPoint(1.5f, 1.5f)); // restore the demo spawn
+        // A free position is still accepted.
+        session.addCheckpoint(UiCheckpoint.move(new UiPoint(2.5f, 2.5f)));
+        // An exact decimal position survives: the route target is the point itself.
+        UiSnapshot snapshot = session.snapshot();
+        if (Math.abs(snapshot.checkpoints().get(2).point().x() - 2.5f) > 0f) {
+            throw new IllegalStateException("Decimal checkpoint coordinate was not preserved");
+        }
     }
 
     private static void expectRejection(Runnable action, String what) {
@@ -370,8 +397,7 @@ public final class SimulatorUiMain {
     private static void verifyCanvas(UiSnapshot snapshot) {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> {
-                });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 if (canvas.fitZoom() <= 0d) {
@@ -447,7 +473,7 @@ public final class SimulatorUiMain {
 
     private static void verifyBrowsePan(UiSnapshot snapshot) {
         int[] editCount = {0};
-        SimulationCanvas canvas = new SimulationCanvas(cell -> editCount[0]++);
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> editCount[0]++);
         canvas.setSnapshot(snapshot);
         canvas.setViewportSize(320, 240);
         canvas.setZoom(100d);
@@ -484,11 +510,52 @@ public final class SimulatorUiMain {
         if (editCount[0] != 1) {
             throw new IllegalStateException("Leaving browse mode did not restore map editing");
         }
+
+        // Middle-button drag pans under any tool, without invoking an edit.
+        viewport.setViewPosition(new Point(200, 180));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON2_DOWN_MASK, 200, 180, 1, false, MouseEvent.BUTTON2));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
+                MouseEvent.BUTTON2_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
+        Point middlePannedView = viewport.getViewPosition();
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                160, 150, 1, false, MouseEvent.BUTTON2));
+        if (middlePannedView.x != 240 || middlePannedView.y != 210) {
+            throw new IllegalStateException("Middle-button drag did not pan the viewport");
+        }
+        if (editCount[0] != 1) {
+            throw new IllegalStateException("Middle-button pan invoked an editor action");
+        }
+
+        // Space+left-drag pans under any tool and marks the hold as used for
+        // panning, so the release does not toggle playback.
+        canvas.setSpaceDown(true);
+        viewport.setViewPosition(new Point(200, 180));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON1_DOWN_MASK, 200, 180, 1, false, MouseEvent.BUTTON1));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
+                MouseEvent.BUTTON1_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
+        Point spacePannedView = viewport.getViewPosition();
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                160, 150, 1, false, MouseEvent.BUTTON1));
+        canvas.setSpaceDown(false);
+        if (spacePannedView.x != 240 || spacePannedView.y != 210) {
+            throw new IllegalStateException("Space+left drag did not pan the viewport");
+        }
+        if (!canvas.consumeSpacePanUsed()) {
+            throw new IllegalStateException("Space pan was not recorded for the release guard");
+        }
+        if (canvas.consumeSpacePanUsed()) {
+            throw new IllegalStateException("Space pan flag was not consumed once");
+        }
+        if (editCount[0] != 1) {
+            throw new IllegalStateException("Space pan invoked an editor action");
+        }
     }
 
     private static void verifyNonPrimaryButtonsDoNotEdit(UiSnapshot snapshot) {
         int[] editCount = {0};
-        SimulationCanvas canvas = new SimulationCanvas(cell -> editCount[0]++);
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> editCount[0]++);
         canvas.setSnapshot(snapshot);
         Point point = canvas.canvasPointForWorld(1.5d, 1.5d);
         canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
@@ -567,6 +634,61 @@ public final class SimulatorUiMain {
         }
     }
 
+    /**
+     * Decimal route points round-trip bit-exactly through the codec, and
+     * legacy integer-cell files load as cell centers.
+     */
+    private static void verifyDecimalScenarioCodec() {
+        SimulationSession session = new SimulationSession();
+        session.newScenario(8, 3);
+        session.placeSpawn(new UiPoint(0.5f, 1.1222f));
+        session.placeEndpoint(new UiPoint(7.25f, 1.5f));
+        session.addCheckpoint(UiCheckpoint.move(new UiPoint(3.3f, 2.7f)));
+        String text = session.exportScenario();
+        if (!text.contains("spawn 0.5 1.1222") || !text.contains("endpoint 7.25 1.5")
+                || !text.contains("checkpoint MOVE 3.3 2.7")) {
+            throw new IllegalStateException("Decimal coordinates were not exported exactly: " + text);
+        }
+        SimulationSession imported = new SimulationSession();
+        imported.importScenario(text);
+        UiSnapshot snapshot = imported.snapshot();
+        if (snapshot.spawn().x() != 0.5f || snapshot.spawn().y() != 1.1222f
+                || snapshot.endpoint().x() != 7.25f
+                || snapshot.checkpoints().get(0).point().x() != 3.3f
+                || snapshot.checkpoints().get(0).point().y() != 2.7f) {
+            throw new IllegalStateException("Decimal coordinates changed across the round trip");
+        }
+        if (!imported.exportScenario().equals(text)) {
+            throw new IllegalStateException("Decimal export was not stable across a round trip");
+        }
+
+        // Legacy v2/v3 text: integer cells become their centers.
+        String legacy = "# arknights pathfinding scenario v3\n"
+                + "map 8 3\n"
+                + "unit 1\n"
+                + "spawn 1 1\n"
+                + "endpoint 6 1\n"
+                + "movement GROUND\n"
+                + "speed 1.0\n"
+                + "diagonal true\n"
+                + "checkpoint MOVE 3 1\n";
+        SimulationSession upgraded = new SimulationSession();
+        upgraded.importScenario(legacy);
+        UiSnapshot legacySnapshot = upgraded.snapshot();
+        if (legacySnapshot.spawn().x() != 1.5f || legacySnapshot.spawn().y() != 1.5f
+                || legacySnapshot.endpoint().x() != 6.5f
+                || legacySnapshot.checkpoints().get(0).point().x() != 3.5f) {
+            throw new IllegalStateException("Legacy cell coordinates did not load as centers");
+        }
+        // The header marks the decimal format; without it integers stay cells.
+        String headerless = legacy.replace("# arknights pathfinding scenario v3\n", "");
+        SimulationSession headerlessImport = new SimulationSession();
+        headerlessImport.importScenario(headerless);
+        if (headerlessImport.snapshot().spawn().x() != 1.5f) {
+            throw new IllegalStateException("Headerless file was not read as legacy cells");
+        }
+    }
+
     private static void verifyCheckpointEditing() {
         SimulationSession waitSession = new SimulationSession();
         waitSession.newScenario(6, 2);
@@ -584,8 +706,8 @@ public final class SimulatorUiMain {
 
         SimulationSession patrolSession = new SimulationSession();
         patrolSession.newScenario(8, 3);
-        patrolSession.addCheckpoint(UiCheckpoint.move(new UiCell(2, 1)));
-        patrolSession.addCheckpoint(UiCheckpoint.patrolMove(new UiCell(5, 1)));
+        patrolSession.addCheckpoint(UiCheckpoint.move(new UiPoint(2.5f, 1.5f)));
+        patrolSession.addCheckpoint(UiCheckpoint.patrolMove(new UiPoint(5.5f, 1.5f)));
         for (int frame = 0; frame < 600; frame++) {
             patrolSession.tick();
             if (patrolSession.snapshot().activeCheckpoint() == 0 && frame > 200) {
@@ -598,7 +720,7 @@ public final class SimulatorUiMain {
 
         SimulationSession portalSession = new SimulationSession();
         portalSession.newScenario(8, 3);
-        portalSession.addCheckpoint(UiCheckpoint.appearAt(new UiCell(6, 1)));
+        portalSession.addCheckpoint(UiCheckpoint.appearAt(new UiPoint(6.5f, 1.5f)));
         portalSession.insertCheckpointBefore(0, UiCheckpoint.disappear());
         UiSnapshot portalFrame = portalSession.tick();
         if (!portalFrame.transition().contains("APPEAR_AT_POS")
@@ -881,7 +1003,7 @@ public final class SimulatorUiMain {
             throw new IllegalStateException("Adding a draft did not create and select a second unit");
         }
         session.selectDraft(1);
-        session.placeEndpoint(new UiCell(6, 2));
+        session.placeEndpoint(new UiPoint(6.5f, 2.5f));
         UiFrame frame = session.tickFrame();
         if (frame.units().size() != 2 || frame.frame() != 1) {
             throw new IllegalStateException("Stage frame did not carry every unit");
@@ -927,8 +1049,7 @@ public final class SimulatorUiMain {
             }
         }
 
-        SimulationCanvas canvas = new SimulationCanvas(cell -> {
-        });
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
         canvas.setSnapshot(frame.units().get(0));
         canvas.setUnits(frame.units());
         verifyCanvasPaint(canvas, 800, 560);
@@ -942,7 +1063,7 @@ public final class SimulatorUiMain {
         String pristine = session.exportScenario();
 
         session.setTerrain(new UiCell(3, 3), UiTerrain.WALL);
-        session.placeSpawn(new UiCell(2, 2));
+        session.placeSpawn(new UiPoint(2.5f, 2.5f));
         session.addCheckpoint(UiCheckpoint.waitForSeconds(1.5f));
         session.addDraft();
         session.setAllowDiagonalMove(false);
@@ -1214,7 +1335,7 @@ public final class SimulatorUiMain {
 
     private static void verifyCheckpointArgumentValidation() {
         try {
-            new UiCheckpoint(UiCheckpointType.MOVE, new UiCell(1, 1), 5f, 0);
+            new UiCheckpoint(UiCheckpointType.MOVE, new UiPoint(1.5f, 1.5f), 5f, 0);
             throw new IllegalStateException("A MOVE checkpoint carrying seconds was accepted");
         } catch (IllegalArgumentException expected) {
             if (!expected.getMessage().contains("秒数")) {
@@ -1242,12 +1363,12 @@ public final class SimulatorUiMain {
 
         // The enum factory is the single type-to-construction mapping.
         UiCheckpoint created = UiCheckpointType.WAIT_FOR_SECONDS.create(null, 2f, 0);
-        if (created.value() != 2f || created.cell() != null) {
+        if (created.value() != 2f || created.point() != null) {
             throw new IllegalStateException("Enum factory lost the seconds argument");
         }
-        UiCheckpoint moved = UiCheckpointType.PATROL_MOVE.create(new UiCell(2, 2));
-        if (!new UiCell(2, 2).equals(moved.cell())) {
-            throw new IllegalStateException("Enum factory lost the cell argument");
+        UiCheckpoint moved = UiCheckpointType.PATROL_MOVE.create(new UiPoint(2.5f, 2.5f));
+        if (!new UiPoint(2.5f, 2.5f).equals(moved.point())) {
+            throw new IllegalStateException("Enum factory lost the point argument");
         }
 
         // Point -> point-less conversion drops the cell; the reverse still fails.
@@ -1366,13 +1487,19 @@ public final class SimulatorUiMain {
     }
 
     private static void verifyCheckpointRowFormat() {
-        UiCheckpoint move = UiCheckpoint.move(new UiCell(3, 4));
+        UiCheckpoint move = UiCheckpoint.move(new UiPoint(3.5f, 4.5f));
         String active = UiFormat.checkpointRow(1, move, true);
         String idle = UiFormat.checkpointRow(1, move, false);
         if (!active.startsWith("▶") || idle.startsWith("▶")
                 || !active.contains("移动") || !active.contains("(3.5, 4.5)")
                 || !idle.contains("02")) {
             throw new IllegalStateException("Checkpoint row lost its active marker or detail");
+        }
+        // Decimal coordinates show up to four trimmed digits.
+        UiCheckpoint decimal = UiCheckpoint.move(new UiPoint(6f, 1.1222f));
+        String decimalRow = UiFormat.checkpointRow(0, decimal, false);
+        if (!decimalRow.contains("(6, 1.1222)")) {
+            throw new IllegalStateException("Checkpoint row did not trim decimal coordinates");
         }
     }
 
@@ -1387,7 +1514,7 @@ public final class SimulatorUiMain {
     private static void verifyRejectionFlash(UiSnapshot snapshot) {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(canvas.fitZoom());
@@ -1428,7 +1555,7 @@ public final class SimulatorUiMain {
         UiSnapshot snapshot = session.snapshot(); // demo: spawn(1,1) endpoint(10,6) on 12x8
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(canvas.fitZoom());
@@ -1469,7 +1596,7 @@ public final class SimulatorUiMain {
     private static void verifyTerrainAlignment(UiSnapshot snapshot) {
         try {
             SwingUtilities.invokeAndWait(() -> {
-                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
                 canvas.setSnapshot(snapshot);
                 canvas.setViewportSize(800, 560);
                 canvas.setZoom(canvas.fitZoom());
@@ -1572,7 +1699,7 @@ public final class SimulatorUiMain {
     }
 
     private static void verifyHoverInvalidation(UiSnapshot snapshot) {
-        SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
         canvas.setSnapshot(snapshot);
         UiSnapshot first = tooltipSnapshot(3, new UiPoint(2f, 2f), false);
         UiSnapshot second = tooltipSnapshot(4, new UiPoint(4f, 2f), false);
@@ -1607,7 +1734,7 @@ public final class SimulatorUiMain {
         if (!current.trajectoryBreak()) {
             throw new IllegalStateException("Portal frame did not mark the actual trajectory as broken");
         }
-        SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
         canvas.setSnapshot(current);
         canvas.setTrajectory(List.of(previous, current));
         canvas.setViewportSize(800, 560);

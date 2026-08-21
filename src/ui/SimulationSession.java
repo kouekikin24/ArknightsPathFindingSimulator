@@ -50,15 +50,15 @@ public final class SimulationSession {
     private List<UiPathSegment> cachedSegments = List.of();
 
     /** One route's editable data; the scenario holds one draft per unit. */
-    private record UnitDraft(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+    private record UnitDraft(UiPoint spawn, UiPoint endpoint, List<UiCheckpoint> checkpoints,
                              UiMovementMode movementMode, float attributeSpeed,
                              boolean allowDiagonalMove) {
-        UnitDraft withSpawn(UiCell value) {
+        UnitDraft withSpawn(UiPoint value) {
             return new UnitDraft(value, endpoint, checkpoints, movementMode, attributeSpeed,
                     allowDiagonalMove);
         }
 
-        UnitDraft withEndpoint(UiCell value) {
+        UnitDraft withEndpoint(UiPoint value) {
             return new UnitDraft(spawn, value, checkpoints, movementMode, attributeSpeed,
                     allowDiagonalMove);
         }
@@ -106,9 +106,9 @@ public final class SimulationSession {
     public synchronized void loadDemoScenario() {
         pushUndo();
         initializeScenario(12, 8);
-        UnitDraft demo = new UnitDraft(new UiCell(1, 1), new UiCell(10, 6),
-                new ArrayList<>(List.of(UiCheckpoint.move(new UiCell(5, 1)),
-                        UiCheckpoint.move(new UiCell(5, 5)))),
+        UnitDraft demo = new UnitDraft(new UiPoint(1.5f, 1.5f), new UiPoint(10.5f, 6.5f),
+                new ArrayList<>(List.of(UiCheckpoint.move(new UiPoint(5.5f, 1.5f)),
+                        UiCheckpoint.move(new UiPoint(5.5f, 5.5f)))),
                 UiMovementMode.GROUND, 1f, true);
         drafts.clear();
         drafts.add(demo);
@@ -182,41 +182,47 @@ public final class SimulationSession {
         return true;
     }
 
-    public synchronized void placeSpawn(UiCell cell) {
-        requireInside(cell);
-        requireNotOnEndpointOrCheckpoint(cell, "起点");
+    public synchronized void placeSpawn(UiPoint point) {
+        requireInside(point);
+        requireNotOnEndpointOrCheckpoint(point, "起点");
         pushUndo();
-        updateDraft(draft().withSpawn(cell));
-        ensureOpen(cell);
+        updateDraft(draft().withSpawn(point));
+        ensureOpen(floorCell(point));
         rebuildSimulator();
     }
 
-    public synchronized void placeEndpoint(UiCell cell) {
-        requireInside(cell);
-        requireNotOnSpawnOrCheckpoint(cell, "终点");
+    public synchronized void placeEndpoint(UiPoint point) {
+        requireInside(point);
+        requireNotOnSpawnOrCheckpoint(point, "终点");
         pushUndo();
-        updateDraft(draft().withEndpoint(cell));
-        ensureOpen(cell);
+        updateDraft(draft().withEndpoint(point));
+        ensureOpen(floorCell(point));
         rebuildSimulator();
     }
 
-    private void requireNotOnEndpointOrCheckpoint(UiCell cell, String what) {
-        if (cell.equals(draft().endpoint())) {
+    /** Route points may sit anywhere; occupancy rules compare the cells they fall in. */
+    private static UiCell floorCell(UiPoint point) {
+        return new UiCell((int) Math.floor(point.x()), (int) Math.floor(point.y()));
+    }
+
+    private void requireNotOnEndpointOrCheckpoint(UiPoint point, String what) {
+        if (floorCell(point).equals(floorCell(draft().endpoint()))) {
             throw new IllegalArgumentException(what + "不能与终点同格");
         }
-        requireNotOnCheckpoint(cell, what);
+        requireNotOnCheckpoint(point, what);
     }
 
-    private void requireNotOnSpawnOrCheckpoint(UiCell cell, String what) {
-        if (cell.equals(draft().spawn())) {
+    private void requireNotOnSpawnOrCheckpoint(UiPoint point, String what) {
+        if (floorCell(point).equals(floorCell(draft().spawn()))) {
             throw new IllegalArgumentException(what + "不能与起点同格");
         }
-        requireNotOnCheckpoint(cell, what);
+        requireNotOnCheckpoint(point, what);
     }
 
-    private void requireNotOnCheckpoint(UiCell cell, String what) {
+    private void requireNotOnCheckpoint(UiPoint point, String what) {
+        UiCell cell = floorCell(point);
         for (UiCheckpoint checkpoint : draft().checkpoints()) {
-            if (cell.equals(checkpoint.cell())) {
+            if (checkpoint.point() != null && cell.equals(floorCell(checkpoint.point()))) {
                 throw new IllegalArgumentException(
                         what + "不能与检查点同格 (" + cell.x() + ", " + cell.y() + ")");
             }
@@ -251,16 +257,16 @@ public final class SimulationSession {
         updateCheckpoint(index, type, null, value, area);
     }
 
-    /** Like {@link #updateCheckpoint(int, UiCheckpointType, float, int)} but moves a point checkpoint to {@code cell}. */
-    public synchronized void updateCheckpoint(int index, UiCheckpointType type, UiCell cell,
+    /** Like {@link #updateCheckpoint(int, UiCheckpointType, float, int)} but moves a point checkpoint to {@code point}. */
+    public synchronized void updateCheckpoint(int index, UiCheckpointType type, UiPoint point,
                                               float value, int area) {
         requireCheckpointIndex(index);
         List<UiCheckpoint> current = draft().checkpoints();
         UiCheckpoint previous = current.get(index);
         UiCheckpoint updated = new UiCheckpoint(type,
-                type.hasPoint() ? (cell != null ? cell : previous.cell()) : null,
+                type.hasPoint() ? (point != null ? point : previous.point()) : null,
                 type.usesSeconds() ? value : 0f, type.usesArea() ? area : 0);
-        if (type.hasPoint() && updated.cell() == null) {
+        if (type.hasPoint() && updated.point() == null) {
             throw new IllegalArgumentException("检查点 " + (index + 1)
                     + " 没有可保留的地图坐标，无法改为「" + type.label() + "」");
         }
@@ -313,16 +319,19 @@ public final class SimulationSession {
     private void commitCheckpoints(List<UiCheckpoint> next) {
         UnitDraft current = draft();
         for (int index = 0; index < next.size(); index++) {
-            UiCell cell = next.get(index).cell();
-            if (cell == null) {
+            UiPoint point = next.get(index).point();
+            if (point == null) {
                 continue;
             }
-            if (cell.equals(current.spawn()) || cell.equals(current.endpoint())) {
+            requireInside(point);
+            UiCell cell = floorCell(point);
+            if (cell.equals(floorCell(current.spawn())) || cell.equals(floorCell(current.endpoint()))) {
                 throw new IllegalArgumentException(
                         "检查点不能与起点/终点同格 (" + cell.x() + ", " + cell.y() + ")");
             }
             for (int other = index + 1; other < next.size(); other++) {
-                if (cell.equals(next.get(other).cell())) {
+                UiPoint otherPoint = next.get(other).point();
+                if (otherPoint != null && cell.equals(floorCell(otherPoint))) {
                     throw new IllegalArgumentException("Cell (" + cell.x() + ", " + cell.y()
                             + ") already has a checkpoint");
                 }
@@ -334,8 +343,8 @@ public final class SimulationSession {
         current.checkpoints().clear();
         current.checkpoints().addAll(next);
         for (UiCheckpoint checkpoint : current.checkpoints()) {
-            if (checkpoint.cell() != null) {
-                ensureOpen(checkpoint.cell());
+            if (checkpoint.point() != null) {
+                ensureOpen(floorCell(checkpoint.point()));
             }
         }
         rebuildSimulator();
@@ -551,8 +560,8 @@ public final class SimulationSession {
                 width,
                 height,
                 terrainView(),
-                unitDraft.spawn().center(),
-                unitDraft.endpoint().center(),
+                unitDraft.spawn(),
+                unitDraft.endpoint(),
                 List.copyOf(unitDraft.checkpoints()),
                 unitDraft.movementMode(),
                 unitDraft.attributeSpeed(),
@@ -863,11 +872,11 @@ public final class SimulationSession {
 
     private static boolean conflictsWithRoute(UiCell cell, ScenarioCodec.Scenario parsed) {
         for (ScenarioCodec.UnitSpec unit : parsed.units()) {
-            if (cell.equals(unit.spawn()) || cell.equals(unit.endpoint())) {
+            if (cell.equals(floorCell(unit.spawn())) || cell.equals(floorCell(unit.endpoint()))) {
                 return true;
             }
             for (UiCheckpoint checkpoint : unit.checkpoints()) {
-                if (cell.equals(checkpoint.cell())) {
+                if (checkpoint.point() != null && cell.equals(floorCell(checkpoint.point()))) {
                     return true;
                 }
             }
@@ -880,9 +889,9 @@ public final class SimulationSession {
      * import is rejected by the same rules the core enforces, before any
      * scenario state changes.
      */
-    private static void probeRoute(UiCell spawn, UiCell endpoint, List<UiCheckpoint> checkpoints,
+    private static void probeRoute(UiPoint spawn, UiPoint endpoint, List<UiCheckpoint> checkpoints,
                                    UiMovementMode movementMode, boolean allowDiagonalMove) {
-        new Route(toCorePoint(spawn.center()), toCorePoint(endpoint.center()),
+        new Route(toCorePoint(spawn), toCorePoint(endpoint),
                 toCoreCheckpoints(new ArrayList<>(checkpoints)), coreMovementMode(movementMode),
                 allowDiagonalMove, true, false);
     }
@@ -896,7 +905,7 @@ public final class SimulationSession {
     }
 
     private static Checkpoint toCoreCheckpoint(UiCheckpoint checkpoint) {
-        Vec2f point = checkpoint.cell() == null ? null : toCorePoint(checkpoint.cell().center());
+        Vec2f point = checkpoint.point() == null ? null : toCorePoint(checkpoint.point());
         return switch (checkpoint.type().core()) {
             case MOVE -> Checkpoint.move(point);
             case PATROL_MOVE -> Checkpoint.patrolMove(point);
@@ -952,7 +961,8 @@ public final class SimulationSession {
         }
         int centerY = height / 2;
         drafts.clear();
-        drafts.add(new UnitDraft(new UiCell(0, centerY), new UiCell(width - 1, centerY),
+        drafts.add(new UnitDraft(new UiPoint(0.5f, centerY + 0.5f),
+                new UiPoint(width - 0.5f, centerY + 0.5f),
                 new ArrayList<>(), UiMovementMode.GROUND, 1f, true));
         selectedDraft = 0;
         lastTraces = List.of();
@@ -976,7 +986,7 @@ public final class SimulationSession {
         List<Stage.StageUnit> units = new ArrayList<>(drafts.size());
         for (UnitDraft draft : drafts) {
             units.add(new Stage.StageUnit(
-                    new Route(toCorePoint(draft.spawn().center()), toCorePoint(draft.endpoint().center()),
+                    new Route(toCorePoint(draft.spawn()), toCorePoint(draft.endpoint()),
                             toCoreCheckpoints(draft.checkpoints()),
                             coreMovementMode(draft.movementMode()), draft.allowDiagonalMove(),
                             true, false),
@@ -1035,7 +1045,7 @@ public final class SimulationSession {
     private UiPoint currentTarget(PathfindingSimulator simulator, UnitDraft unitDraft,
                                   PathMap activePathMap, int unitIndex) {
         if (simulator.unit().routeProgress().completed()) {
-            return unitDraft.endpoint().center();
+            return unitDraft.endpoint();
         }
         FrameTrace trace = lastTraceFor(unitIndex);
         if (trace != null && trace.target() != null) {
@@ -1075,11 +1085,11 @@ public final class SimulationSession {
 
     private boolean isRouteCell(UiCell cell) {
         for (UnitDraft draft : drafts) {
-            if (cell.equals(draft.spawn()) || cell.equals(draft.endpoint())) {
+            if (cell.equals(floorCell(draft.spawn())) || cell.equals(floorCell(draft.endpoint()))) {
                 return true;
             }
             for (UiCheckpoint checkpoint : draft.checkpoints()) {
-                if (cell.equals(checkpoint.cell())) {
+                if (checkpoint.point() != null && cell.equals(floorCell(checkpoint.point()))) {
                     return true;
                 }
             }
@@ -1098,6 +1108,13 @@ public final class SimulationSession {
     private void requireInside(UiCell cell) {
         if (cell.x() < 0 || cell.x() >= width || cell.y() < 0 || cell.y() >= height) {
             throw new IllegalArgumentException("Outside editor map: " + cell);
+        }
+    }
+
+    private void requireInside(UiPoint point) {
+        if (point.x() < 0f || point.x() > width || point.y() < 0f || point.y() > height) {
+            throw new IllegalArgumentException("Outside editor map: (" + point.x() + ", "
+                    + point.y() + ")");
         }
     }
 

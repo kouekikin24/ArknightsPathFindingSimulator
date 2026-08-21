@@ -1,13 +1,16 @@
 import java.util.Objects;
 
-/** Editor-side checkpoint value: a type plus its map cell, seconds, or area argument. */
-public record UiCheckpoint(UiCheckpointType type, UiCell cell, float value, int area) {
+/** Editor-side checkpoint value: a type plus its map point, seconds, or area argument. */
+public record UiCheckpoint(UiCheckpointType type, UiPoint point, float value, int area) {
 
     public UiCheckpoint {
         Objects.requireNonNull(type, "Checkpoint type is required");
-        if (type.hasPoint() != (cell != null)) {
+        if (type.hasPoint() != (point != null)) {
             throw new IllegalArgumentException(type.label()
                     + (type.hasPoint() ? " 需要地图坐标" : " 不接受地图坐标"));
+        }
+        if (point != null && (!Float.isFinite(point.x()) || !Float.isFinite(point.y()))) {
+            throw new IllegalArgumentException("检查点坐标必须有限");
         }
         if (!Float.isFinite(value) || value < 0f) {
             throw new IllegalArgumentException("检查点数值必须有限且非负");
@@ -23,16 +26,16 @@ public record UiCheckpoint(UiCheckpointType type, UiCell cell, float value, int 
         }
     }
 
-    public static UiCheckpoint move(UiCell cell) {
-        return new UiCheckpoint(UiCheckpointType.MOVE, cell, 0f, 0);
+    public static UiCheckpoint move(UiPoint point) {
+        return new UiCheckpoint(UiCheckpointType.MOVE, point, 0f, 0);
     }
 
-    public static UiCheckpoint patrolMove(UiCell cell) {
-        return new UiCheckpoint(UiCheckpointType.PATROL_MOVE, cell, 0f, 0);
+    public static UiCheckpoint patrolMove(UiPoint point) {
+        return new UiCheckpoint(UiCheckpointType.PATROL_MOVE, point, 0f, 0);
     }
 
-    public static UiCheckpoint appearAt(UiCell cell) {
-        return new UiCheckpoint(UiCheckpointType.APPEAR_AT_POS, cell, 0f, 0);
+    public static UiCheckpoint appearAt(UiPoint point) {
+        return new UiCheckpoint(UiCheckpointType.APPEAR_AT_POS, point, 0f, 0);
     }
 
     public static UiCheckpoint waitForSeconds(float seconds) {
