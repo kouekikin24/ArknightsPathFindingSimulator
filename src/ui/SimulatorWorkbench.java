@@ -124,18 +124,16 @@ public final class SimulatorWorkbench extends JFrame {
             new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d)), 6);
     private final JSpinner checkpointAreaSpinner = cappedEditor(
             new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5);
-    private final JSpinner checkpointXSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
-    private final JSpinner checkpointYSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
-    private final JSpinner spawnXSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
-    private final JSpinner spawnYSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
-    private final JSpinner endpointXSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
-    private final JSpinner endpointYSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 4);
+    private final JSpinner checkpointXSpinner = coordinateSpinner();
+    private final JSpinner checkpointYSpinner = coordinateSpinner();
+    private final JSpinner spawnXSpinner = coordinateSpinner();
+    private final JSpinner spawnYSpinner = coordinateSpinner();
+    private final JSpinner endpointXSpinner = coordinateSpinner();
+    private final JSpinner endpointYSpinner = coordinateSpinner();
+    private final java.awt.CardLayout routePointEditorCards = new java.awt.CardLayout();
+    private final JPanel routePointEditorSlot = new JPanel(routePointEditorCards);
+    private final JPanel spawnEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+    private final JPanel endpointEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
     private JLabel checkpointCoordLabel;
     private JPanel checkpointCoordPanel;
     private final JButton addCheckpointButton = new JButton("添加");
@@ -488,34 +486,46 @@ public final class SimulatorWorkbench extends JFrame {
         c.weightx = 1d;
         c.fill = GridBagConstraints.HORIZONTAL;
         section.add(tools, c);
-        addRoutePointRow(section, 1, "起点", spawnXSpinner, spawnYSpinner, true);
-        addRoutePointRow(section, 2, "终点", endpointXSpinner, endpointYSpinner, false);
+        // The numeric editors live in one fixed CardLayout slot: the S/E
+        // tools swap their row in, every other tool shows an empty card, so
+        // the sidebar never reshapes around them.
+        spawnEditorRow.setOpaque(false);
+        spawnEditorRow.add(spawnXSpinner);
+        JLabel spawnComma = new JLabel(",");
+        spawnComma.setForeground(LABEL_TEXT);
+        spawnEditorRow.add(spawnComma);
+        spawnEditorRow.add(spawnYSpinner);
+        endpointEditorRow.setOpaque(false);
+        endpointEditorRow.add(endpointXSpinner);
+        JLabel endpointComma = new JLabel(",");
+        endpointComma.setForeground(LABEL_TEXT);
+        endpointEditorRow.add(endpointComma);
+        endpointEditorRow.add(endpointYSpinner);
+        routePointEditorSlot.setOpaque(false);
+        JPanel emptyCard = new JPanel();
+        emptyCard.setOpaque(false);
+        routePointEditorSlot.add(emptyCard, "none");
+        routePointEditorSlot.add(spawnEditorRow, "spawn");
+        routePointEditorSlot.add(endpointEditorRow, "endpoint");
+        addFormRow(section, c, 1, "起终点", routePointEditorSlot);
+        addRoutePointCommit(spawnXSpinner, spawnYSpinner, true);
+        addRoutePointCommit(endpointXSpinner, endpointYSpinner, false);
+        updateRoutePointEditorVisibility();
         return section;
     }
 
-    /** Numeric spawn/endpoint entry: spinners commit exact decimal coordinates. */
-    private void addRoutePointRow(JPanel section, int row, String label,
-                                  JSpinner xSpinner, JSpinner ySpinner, boolean spawn) {
-        GridBagConstraints c = baseConstraints();
-        JLabel name = new JLabel(label);
-        name.setForeground(LABEL_TEXT);
-        c.gridx = 0;
-        c.gridy = row;
-        c.gridwidth = 1;
-        c.weightx = 0d;
-        c.fill = GridBagConstraints.NONE;
-        section.add(name, c);
-        c.gridx = 1;
-        c.weightx = 1d;
-        c.fill = GridBagConstraints.HORIZONTAL;
-        JPanel rowPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        rowPanel.setOpaque(false);
-        rowPanel.add(xSpinner);
-        JLabel comma = new JLabel(",");
-        comma.setForeground(LABEL_TEXT);
-        rowPanel.add(comma);
-        rowPanel.add(ySpinner);
-        section.add(rowPanel, c);
+    /** Shows exactly the numeric row of the active route-point tool, if any. */
+    private void updateRoutePointEditorVisibility() {
+        String card = switch (selectedTool) {
+            case SPAWN -> "spawn";
+            case ENDPOINT -> "endpoint";
+            default -> "none";
+        };
+        routePointEditorCards.show(routePointEditorSlot, card);
+    }
+
+    /** Spinners commit exact decimal coordinates; canvas clicks snap to cell centers. */
+    private void addRoutePointCommit(JSpinner xSpinner, JSpinner ySpinner, boolean spawn) {
         String pointLabel = spawn ? "起点" : "终点";
         xSpinner.setToolTipText(pointLabel + " X 坐标（世界坐标，可为小数）");
         ySpinner.setToolTipText(pointLabel + " Y 坐标（世界坐标，可为小数）");
@@ -795,8 +805,10 @@ public final class SimulatorWorkbench extends JFrame {
             case BOX -> terrainError(cell, UiTerrain.BOX);
             case PIT -> terrainError(cell, UiTerrain.PIT);
             case WALL -> terrainError(cell, UiTerrain.WALL);
-            case SPAWN -> spawnError(point);
-            case ENDPOINT -> endpointError(point);
+            // Spawn/endpoint clicks snap to the clicked cell's center; exact
+            // decimals are only accepted through the numeric editors.
+            case SPAWN -> spawnError(cell.center());
+            case ENDPOINT -> endpointError(cell.center());
             case CHECKPOINT -> checkpointError(point);
             case BROWSE -> null;
         };
@@ -1081,11 +1093,13 @@ public final class SimulatorWorkbench extends JFrame {
     /** Verify hook: the decimal checkpoint flow keeps exact coordinates end to end. */
     boolean verifyDecimalCheckpointFlow() {
         session.newScenario(8, 3);
+        EditorTool previousTool = selectedTool;
         selectedTool = EditorTool.CHECKPOINT;
         playback.stop();
         invalidateSeek();
         refresh(session.snapshotFrame());
         applyEditorTool(new UiCell(6, 1), new UiPoint(6.5f, 1.1222f));
+        selectedTool = previousTool;
         List<UiCheckpoint> checkpoints = session.snapshot().checkpoints();
         if (checkpoints.size() != 1 || checkpoints.get(0).point() == null
                 || Math.abs(checkpoints.get(0).point().y() - 1.1222f) > 0f) {
@@ -1099,6 +1113,55 @@ public final class SimulatorWorkbench extends JFrame {
         invalidateSeek();
         refresh(session.snapshotFrame());
         return Math.abs(session.snapshot().checkpoints().get(0).point().y() - 1.1222f) <= 0f;
+    }
+
+    /** Verify hook: spawn/endpoint numeric rows only show for their own tool. */
+    boolean verifyRoutePointEditorVisibility() {
+        EditorTool previousTool = selectedTool;
+        try {
+            selectedTool = EditorTool.OPEN;
+            updateRoutePointEditorVisibility();
+            if (visibleRoutePointCard() != null) {
+                return false;
+            }
+            selectedTool = EditorTool.SPAWN;
+            updateRoutePointEditorVisibility();
+            if (visibleRoutePointCard() != spawnEditorRow) {
+                return false;
+            }
+            selectedTool = EditorTool.ENDPOINT;
+            updateRoutePointEditorVisibility();
+            return visibleRoutePointCard() == endpointEditorRow;
+        } finally {
+            selectedTool = previousTool;
+            updateRoutePointEditorVisibility();
+        }
+    }
+
+    /** The row the CardLayout currently shows, or null for the empty card. */
+    private JPanel visibleRoutePointCard() {
+        for (Component component : routePointEditorSlot.getComponents()) {
+            if (component.isVisible()) {
+                return component == spawnEditorRow || component == endpointEditorRow
+                        ? (JPanel) component : null;
+            }
+        }
+        return null;
+    }
+
+    /** Verify hook: typed 4-decimal coordinates commit exactly through the spinner editor. */
+    boolean verifyCoordinateSpinnerAcceptsDecimal() {
+        javax.swing.JSpinner.NumberEditor editor =
+                (javax.swing.JSpinner.NumberEditor) checkpointXSpinner.getEditor();
+        editor.getTextField().setValue(1.1222d);
+        try {
+            checkpointXSpinner.commitEdit();
+        } catch (java.text.ParseException failure) {
+            return false;
+        }
+        double committed = ((Number) checkpointXSpinner.getValue()).doubleValue();
+        checkpointXSpinner.setValue(0.5d);
+        return Math.abs(committed - 1.1222d) < 1e-9;
     }
 
     // ----- theming -----------------------------------------------------------
@@ -1481,6 +1544,7 @@ public final class SimulatorWorkbench extends JFrame {
         button.addActionListener(event -> {
             selectedTool = tool;
             canvas.setBrowseMode(tool == EditorTool.BROWSE);
+            updateRoutePointEditorVisibility();
         });
         if (tool == selectedTool) {
             button.setSelected(true);
@@ -1498,6 +1562,14 @@ public final class SimulatorWorkbench extends JFrame {
     /** Keeps combat-row spinners narrow enough that the sidebar never clips horizontally. */
     private static JSpinner narrowSpinner(JSpinner spinner) {
         return cappedEditor(spinner, 2);
+    }
+
+    /** Coordinate editors: 4-decimal display, typed values within range commit as-is. */
+    private static JSpinner coordinateSpinner() {
+        JSpinner spinner = new JSpinner(new SpinnerNumberModel(0.5d, 0.0d,
+                (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d));
+        spinner.setEditor(new JSpinner.NumberEditor(spinner, "0.0###"));
+        return cappedEditor(spinner, 5);
     }
 
     /** Caps the editor's column width so a huge model maximum never widens the sidebar. */

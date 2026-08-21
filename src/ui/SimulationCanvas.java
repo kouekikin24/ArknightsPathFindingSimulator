@@ -436,11 +436,13 @@ public final class SimulationCanvas extends JComponent {
                 canvas.setColor(terrainColor(terrain));
                 canvas.fillRect(left, top, size, size);
                 drawTerrainDetail(canvas, terrain, left, top, size);
-                canvas.setColor(GRID_LINE);
-                canvas.drawRect(left, top, size, size);
                 if (showCoordinates) {
                     drawCellCoordinate(canvas, x, y, left, top, size);
                 }
+                // Grid lines last: labels and terrain details must never
+                // cover the cell outlines.
+                canvas.setColor(GRID_LINE);
+                canvas.drawRect(left, top, size, size);
             }
         }
     }
@@ -541,7 +543,13 @@ public final class SimulationCanvas extends JComponent {
 
     private void updateHover(MouseEvent event) {
         Rectangle dirty = hoverInvalidationBounds();
-        hoverPosition = event.getPoint();
+        Point position = event.getPoint();
+        // A full repaint here would revalidate the scroll pane while it
+        // pans; moving within one hover box keeps the previous sample.
+        if (hoverPosition != null && dirty != null && dirty.contains(position)) {
+            return;
+        }
+        hoverPosition = position;
         refreshHoverSample();
         repaintHover(dirty);
     }
@@ -717,16 +725,16 @@ public final class SimulationCanvas extends JComponent {
         }
         drawMarker(canvas, snapshot.endpoint(), ENDPOINT, "E", false);
         if (snapshot.target() != null) {
-            // Waypoint ring: dashed and hollow with a center dot, so it never
-            // reads as one of the solid, numbered checkpoint diamonds.
+            // Waypoint ring: dashed, hollow, and sized to stay inside one
+            // cell, so it reads as a hint rather than a route marker.
             int x = worldToCanvasX(snapshot.target().x());
             int y = worldToCanvasY(snapshot.target().y());
-            int radius = Math.max(5, worldLengthToPixels(0.10d));
+            int radius = Math.max(4, Math.min(worldLengthToPixels(0.12d),
+                    worldLengthToPixels(0.5d) / 2 - 2));
             canvas.setColor(new Color(32, 104, 95));
-            canvas.setStroke(new BasicStroke(Math.max(1.5f, (float) (zoom * 0.04d)),
-                    BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, new float[]{5f, 4f}, 0f));
+            canvas.setStroke(new BasicStroke(Math.max(1.2f, (float) (zoom * 0.03d)),
+                    BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, new float[]{4f, 3f}, 0f));
             canvas.drawOval(x - radius, y - radius, radius * 2, radius * 2);
-            canvas.fillOval(x - 2, y - 2, 4, 4);
         }
     }
 

@@ -293,9 +293,17 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "Refused spawn/endpoint placement lacked feedback or moved the point");
                 }
+                if (!workbench.verifyRoutePointEditorVisibility()) {
+                    throw new IllegalStateException(
+                            "Spawn/endpoint numeric rows did not follow the selected tool");
+                }
                 if (!workbench.verifyDecimalCheckpointFlow()) {
                     throw new IllegalStateException(
                             "Decimal checkpoint coordinates changed across canvas and codec");
+                }
+                if (!workbench.verifyCoordinateSpinnerAcceptsDecimal()) {
+                    throw new IllegalStateException(
+                            "Coordinate spinner rejected or mangled a 4-decimal value");
                 }
             });
         } catch (InterruptedException exception) {
