@@ -43,6 +43,8 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
@@ -256,15 +258,15 @@ public final class SimulatorWorkbench extends JFrame {
         title.setForeground(VALUE);
         toolbar.add(title);
         toolbar.addSeparator(new Dimension(16, 1));
-        JButton step = ComponentIds.tag(iconButton("⏭", "推进一帧（N）"), "P1", "推进一帧");
+        JButton step = ComponentIds.tag(iconButton("⏭", "推进一帧"), "P1", "推进一帧");
         step.addActionListener(event -> stepOneFrame());
         toolbar.add(step);
-        playButton.setToolTipText("运行（空格）");
+        playButton.setToolTipText("运行");
         playButton.setFocusable(false);
         playButton.setPreferredSize(new Dimension(38, 29));
         playButton.addActionListener(event -> playback.toggle());
         toolbar.add(playButton);
-        JButton reset = ComponentIds.tag(iconButton("↺", "重置运行（R）"), "P3", "重置运行");
+        JButton reset = ComponentIds.tag(iconButton("↺", "重置运行"), "P3", "重置运行");
         reset.addActionListener(event -> resetRun());
         toolbar.add(reset);
         undoButton.addActionListener(event -> undoEdit());
@@ -325,7 +327,15 @@ public final class SimulatorWorkbench extends JFrame {
         panel.add(zoomBar, BorderLayout.NORTH);
         mapScrollPane.setBorder(null);
         mapScrollPane.getViewport().setBackground(canvas.getBackground());
-        mapScrollPane.getViewport().addChangeListener(event -> camera.update());
+        mapScrollPane.getViewport().addChangeListener(event -> {
+            // A pan scrolls by blitting; the canvas absorbs the residual shift.
+            Point translate = canvas.consumeCameraTranslate();
+            if (translate != null) {
+                mapScrollPane.getViewport().scrollRectToVisible(new Rectangle(
+                        translate.x, translate.y, 0, 0));
+            }
+            camera.update();
+        });
         panel.add(mapScrollPane, BorderLayout.CENTER);
         return panel;
     }
@@ -351,7 +361,7 @@ public final class SimulatorWorkbench extends JFrame {
         panel.add(labels, BorderLayout.NORTH);
         timelineSlider.setPaintTicks(false);
         timelineSlider.setFocusable(true);
-        timelineSlider.setToolTipText("时间轴单位为帧");
+        timelineSlider.setToolTipText("拖动跳转；←/→ 逐帧、PgUp/PgDn 十帧、Home/End 首末帧");
         panel.add(timelineSlider, BorderLayout.CENTER);
         JPanel statusRow = new JPanel(new BorderLayout(8, 0));
         statusRow.setOpaque(false);
@@ -509,10 +519,10 @@ public final class SimulatorWorkbench extends JFrame {
                 new SwatchIcon(canvas, UiTerrain.WALL), "墙"), "T4", "墙工具"));
         tools.add(ComponentIds.tag(toolButton(group, EditorTool.SPAWN, "S", "起点"), "T5", "起点工具"));
         tools.add(ComponentIds.tag(toolButton(group, EditorTool.ENDPOINT, "E", "终点"), "T6", "终点工具"));
-        tools.add(ComponentIds.tag(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"),
-                "T7", "检查点工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.CHECKPOINT, "+",
+                        "添加移动检查点（按住 Shift 点击吸附格心）"), "T7", "检查点工具"));
         tools.add(ComponentIds.tag(toolButton(group, EditorTool.BROWSE, "浏览",
-                        "浏览地图：左键拖动平移（任意工具下中键或空格+左键也可平移）"),
+                        "浏览地图：左键拖动平移（任意工具下右键拖动也可平移）"),
                 "T8", "浏览（平移）工具"));
         GridBagConstraints c = baseConstraints();
         c.gridx = 0;
@@ -754,27 +764,23 @@ public final class SimulatorWorkbench extends JFrame {
         actions.add(addCheckpointButton);
         JButton update = ComponentIds.tag(new JButton("更新"), "C6", "更新选中的检查点");
         update.setFocusable(false);
-        update.setToolTipText("把选中的检查点改为当前类型和参数");
+        update.setToolTipText("把选中的检查点改为当前类型和参数（输入框里回车同效）");
         update.addActionListener(event -> updateSelectedCheckpoint());
         actions.add(update);
+        // Enter inside any checkpoint editor field is the same as clicking 更新.
+        for (JSpinner spinner : new JSpinner[]{checkpointSecondsSpinner, checkpointAreaSpinner,
+                checkpointXSpinner, checkpointYSpinner}) {
+            ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField()
+                    .addActionListener(event -> updateSelectedCheckpoint());
+        }
         JButton up = ComponentIds.tag(iconButton("↑", "上移选中的检查点"), "C8", "上移检查点");
         up.addActionListener(event -> moveSelectedCheckpoint(-1));
         actions.add(up);
         JButton down = ComponentIds.tag(iconButton("↓", "下移选中的检查点"), "C9", "下移检查点");
         down.addActionListener(event -> moveSelectedCheckpoint(1));
         actions.add(down);
-        JButton remove = ComponentIds.tag(iconButton("−", "删除选中的检查点"), "C10", "删除检查点");
-        remove.addActionListener(event -> {
-            int index = checkpointList.getSelectedIndex();
-            if (index < 0) {
-                return;
-            }
-            try {
-                runEdit(() -> session.removeCheckpoint(index));
-            } catch (IllegalArgumentException error) {
-                operationStatus.setText("无法删除：" + error.getMessage());
-            }
-        });
+        JButton remove = ComponentIds.tag(iconButton("−", "删除选中的检查点（Delete）"), "C10", "删除检查点");
+        remove.addActionListener(event -> deleteSelectedCheckpoint());
         actions.add(remove);
         JButton clear = ComponentIds.tag(iconButton("×", "清空检查点"), "C11", "清空检查点");
         clear.addActionListener(event -> {
@@ -955,6 +961,19 @@ public final class SimulatorWorkbench extends JFrame {
         checkpointFlashTimer.start();
     }
 
+    /** Shared by the − button and the Delete/BackSpace shortcut. */
+    private void deleteSelectedCheckpoint() {
+        int index = checkpointList.getSelectedIndex();
+        if (index < 0) {
+            return;
+        }
+        try {
+            runEdit(() -> session.removeCheckpoint(index));
+        } catch (IllegalArgumentException error) {
+            operationStatus.setText("无法删除：" + error.getMessage());
+        }
+    }
+
     private void moveSelectedCheckpoint(int offset) {
         int index = checkpointList.getSelectedIndex();
         if (index < 0) {
@@ -1018,30 +1037,34 @@ public final class SimulatorWorkbench extends JFrame {
         shortcut(keys, actions, "undo-edit", KeyStroke.getKeyStroke("control Z"), this::undoEdit);
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control Y"), this::redoEdit);
         shortcut(keys, actions, "redo-edit", KeyStroke.getKeyStroke("control shift Z"), this::redoEdit);
-        // Space pans the map while held; play/pause fires on release only when
-        // the hold was not used for panning. Key auto-repeat is ignored.
-        shortcut(keys, actions, "space-pressed", KeyStroke.getKeyStroke("pressed SPACE"), () -> {
-            canvas.setSpaceDown(true);
-        });
-        // The released binding clears the pan flag even when focus sits in a
-        // text field, so a space press can never get stuck on.
-        keys.put(KeyStroke.getKeyStroke("released SPACE"), "space-released");
-        actions.put("space-released", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent event) {
-                canvas.setSpaceDown(false);
-                boolean panned = canvas.consumeSpacePanUsed();
-                if (!panned && globalShortcutAllowed(
-                        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
-                                .getFocusOwner())) {
-                    playButton.doClick();
-                }
-            }
-        });
-        // Pressed-form strokes: the char overload would create KEY_TYPED bindings
-        // that only match the exact typed case ('N' vs the user's 'n').
-        shortcut(keys, actions, "step-frame", KeyStroke.getKeyStroke(KeyEvent.VK_N, 0), this::stepOneFrame);
-        shortcut(keys, actions, "reset-run", KeyStroke.getKeyStroke(KeyEvent.VK_R, 0), this::resetRun);
+        // Delete removes the armed checkpoint row; the typing guard keeps it
+        // from firing while a text field is being edited.
+        shortcut(keys, actions, "delete-checkpoint", KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0),
+                this::deleteSelectedCheckpoint);
+        shortcut(keys, actions, "delete-checkpoint", KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0),
+                this::deleteSelectedCheckpoint);
+        // Esc is the emergency brake during playback only.
+        shortcut(keys, actions, "pause-playback", KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                playback::stop);
+        // Browser-style view controls.
+        shortcut(keys, actions, "zoom-fit", KeyStroke.getKeyStroke("control 0"),
+                camera::requestFit);
+        shortcut(keys, actions, "zoom-in", KeyStroke.getKeyStroke("control EQUALS"),
+                () -> zoomByKeyboard(1.25d));
+        shortcut(keys, actions, "zoom-out", KeyStroke.getKeyStroke("control MINUS"),
+                () -> zoomByKeyboard(1d / 1.25d));
+    }
+
+    /** Zooms around the viewport center; the camera's fit floor still applies. */
+    private void zoomByKeyboard(double factor) {
+        javax.swing.JViewport viewport = mapScrollPane.getViewport();
+        Point view = viewport.getViewPosition();
+        Point center = new Point(viewport.getWidth() / 2, viewport.getHeight() / 2);
+        double worldX = canvas.worldXAtCanvas(view.x + center.x);
+        double worldY = canvas.worldYAtCanvas(view.y + center.y);
+        canvas.setZoomKeepingWorld(canvas.zoom() * factor, worldX, worldY, center, view);
+        canvas.applyRequestedViewPosition();
+        camera.refreshZoomLabel();
     }
 
     private static void shortcut(InputMap keys, ActionMap actions, String name,
@@ -1066,9 +1089,46 @@ public final class SimulatorWorkbench extends JFrame {
         return !(focusOwner instanceof javax.swing.text.JTextComponent);
     }
 
-    /** Verify hook: the selection lists must never hold keyboard focus, or Space stops play/pause. */
+    /** Verify hook: the selection lists must never hold keyboard focus. */
     boolean verifyListFocusPolicy() {
         return !unitList.isFocusable() && !checkpointList.isFocusable();
+    }
+
+    /**
+     * Verify hook: the new shortcuts act on the session — Delete removes the
+     * armed checkpoint row and Esc pauses a running playback.
+     */
+    boolean verifyShortcutActions() {
+        session.loadDemoScenario();
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        int checkpoints = session.snapshot().checkpoints().size();
+        deleteSelectedCheckpoint();
+        if (session.snapshot().checkpoints().size() != checkpoints - 1) {
+            return false;
+        }
+        if (!playButton.isSelected()) {
+            playButton.doClick();
+        }
+        playback.stop();
+        return !playButton.isSelected();
+    }
+
+    /** Verify hook: Enter in a checkpoint editor field updates the selected row. */
+    boolean verifyEnterUpdatesCheckpoint() {
+        session.loadDemoScenario();
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        javax.swing.JFormattedTextField field =
+                ((JSpinner.DefaultEditor) checkpointYSpinner.getEditor()).getTextField();
+        field.setText("1.1222");
+        for (java.awt.event.ActionListener listener : field.getActionListeners()) {
+            listener.actionPerformed(new ActionEvent(field, ActionEvent.ACTION_PERFORMED, ""));
+        }
+        double y = session.snapshot().checkpoints().get(0).point().y();
+        return Math.abs(y - 1.1222d) < 1e-6d;
     }
 
     /**

@@ -1,8 +1,11 @@
 import javax.accessibility.AccessibleContext;
 import javax.swing.JComponent;
+import javax.swing.JViewport;
+import javax.swing.RepaintManager;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Composite;
 import java.awt.Cursor;
 import java.awt.Dimension;
@@ -74,8 +77,6 @@ public final class SimulationCanvas extends JComponent {
     private boolean showTrajectory = true;
     private boolean showCoordinates;
     private boolean browseMode;
-    private boolean spaceDown;
-    private boolean spaceUsedForPan;
     private UiCell lastDraggedCell;
     private Point mapPanStart;
     private Point mapPanViewStart;
@@ -88,6 +89,8 @@ public final class SimulationCanvas extends JComponent {
     private int viewportWidth = 1;
     private int viewportHeight = 1;
     private Point requestedViewPosition;
+    private int cameraTranslateX;
+    private int cameraTranslateY;
     private Runnable zoomChangeListener = () -> { };
 
     public SimulationCanvas(java.util.function.BiConsumer<UiCell, UiPoint> cellHandler) {
@@ -99,12 +102,8 @@ public final class SimulationCanvas extends JComponent {
         MouseAdapter pointerHandler = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent event) {
-                if (javax.swing.SwingUtilities.isMiddleMouseButton(event)
-                        || (javax.swing.SwingUtilities.isLeftMouseButton(event)
-                                && (browseMode || spaceDown))) {
-                    if (spaceDown && javax.swing.SwingUtilities.isLeftMouseButton(event)) {
-                        spaceUsedForPan = true;
-                    }
+                if (javax.swing.SwingUtilities.isRightMouseButton(event)
+                        || (javax.swing.SwingUtilities.isLeftMouseButton(event) && browseMode)) {
                     beginMapPan(event);
                     updateHover(event);
                     return;
@@ -119,8 +118,9 @@ public final class SimulationCanvas extends JComponent {
             @Override
             public void mouseDragged(MouseEvent event) {
                 if (mapPanStart != null) {
+                    // Panning repaints every pixel anyway; defer the hover
+                    // rescan to the release instead of paying it per drag event.
                     panMap(event);
-                    updateHover(event);
                     return;
                 }
                 if (!javax.swing.SwingUtilities.isLeftMouseButton(event)) {
@@ -156,11 +156,28 @@ public final class SimulationCanvas extends JComponent {
 
             @Override
             public void mouseWheelMoved(java.awt.event.MouseWheelEvent event) {
-                event.consume();
                 double rotation = event.getPreciseWheelRotation();
                 if (rotation == 0d) {
                     return;
                 }
+                // Shift turns the wheel into vertical scrolling, the trackpad
+                // convention; an unconsumed event would bubble to the scroll
+                // pane and scroll anyway, so consume and scroll explicitly.
+                if (event.isShiftDown()) {
+                    event.consume();
+                    javax.swing.JViewport viewport = owningViewport();
+                    if (viewport != null) {
+                        Point position = viewport.getViewPosition();
+                        Dimension view = viewport.getViewSize();
+                        Dimension extent = viewport.getExtentSize();
+                        int maxY = Math.max(0, view.height - extent.height);
+                        int step = (int) Math.round(rotation * 48d);
+                        viewport.setViewPosition(new Point(position.x,
+                                Math.max(0, Math.min(maxY, position.y + step))));
+                    }
+                    return;
+                }
+                event.consume();
                 double factor = Math.pow(1.2d, -rotation);
                 Point anchor = event.getPoint();
                 double worldX = canvasToWorldX(anchor.x);
@@ -229,18 +246,6 @@ public final class SimulationCanvas extends JComponent {
         mapPanStart = null;
         mapPanViewStart = null;
         setCursor(Cursor.getPredefinedCursor(value ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
-    }
-
-    /** Space held: left-drag pans instead of editing, under any tool. */
-    public void setSpaceDown(boolean value) {
-        spaceDown = value;
-    }
-
-    /** Whether the current space hold already panned the map; consumed on space release. */
-    public boolean consumeSpacePanUsed() {
-        boolean used = spaceUsedForPan;
-        spaceUsedForPan = false;
-        return used;
     }
 
     /** Flashes a refused edit target so a rejected placement is visible, not silent. */
@@ -379,6 +384,23 @@ public final class SimulationCanvas extends JComponent {
         return new Point(worldToCanvasX(worldX), worldToCanvasY(worldY));
     }
 
+    /** Camera translation in canvas pixels: zoom and viewport size are untouched. */
+    public void translateCameraPixels(int deltaX, int deltaY) {
+        cameraTranslateX += deltaX;
+        cameraTranslateY += deltaY;
+    }
+
+    /** Applied on the EDT by the owning viewport so the next paint is offset. */
+    public Point consumeCameraTranslate() {
+        if (cameraTranslateX == 0 && cameraTranslateY == 0) {
+            return null;
+        }
+        Point delta = new Point(cameraTranslateX, cameraTranslateY);
+        cameraTranslateX = 0;
+        cameraTranslateY = 0;
+        return delta;
+    }
+
     @Override
     public AccessibleContext getAccessibleContext() {
         if (accessibleContext == null) {
@@ -403,6 +425,14 @@ public final class SimulationCanvas extends JComponent {
             canvas.fillRect(0, 0, getWidth(), getHeight());
             if (snapshot == null) {
                 return;
+            }
+            // A camera translation shifts all world content; strips uncovered
+            // by the shift stay background-colored so no doubled edge appears.
+            if (cameraTranslateX != 0 || cameraTranslateY != 0) {
+                canvas.clipRect(PADDING + Math.min(cameraTranslateX, 0),
+                        PADDING + Math.min(cameraTranslateY, 0),
+                        Math.max(0, (int) Math.ceil(snapshot.width() * zoom) + 1 - Math.abs(cameraTranslateX)),
+                        Math.max(0, (int) Math.ceil(snapshot.height() * zoom) + 1 - Math.abs(cameraTranslateY)));
             }
             canvas.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             canvas.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
@@ -657,7 +687,72 @@ public final class SimulationCanvas extends JComponent {
         int deltaY = event.getY() - mapPanStart.y;
         int nextX = Math.max(0, Math.min(maxX, mapPanViewStart.x - deltaX));
         int nextY = Math.max(0, Math.min(maxY, mapPanViewStart.y - deltaY));
+        panViewportTo(viewport, nextX, nextY);
+    }
+
+    /**
+     * Scrolls by copying the already-painted pixels and repainting only the
+     * uncovered strip, with a camera offset absorbing the residual so the map
+     * stays glued to the cursor. The alternative — moving the view over a
+     * changed clip — repaints the whole visible map per drag event, which is
+     * the paused-state drag stutter.
+     */
+    private void panViewportTo(javax.swing.JViewport viewport, int nextX, int nextY) {
+        Point current = viewport.getViewPosition();
+        int dx = nextX - current.x;
+        int dy = nextY - current.y;
+        if (dx == 0 && dy == 0) {
+            return;
+        }
+        Dimension extent = viewport.getExtentSize();
+        int width = extent.width;
+        int height = extent.height;
+        Component view = viewport.getView();
+        if (width <= 0 || height <= 0 || view == null) {
+            viewport.setViewPosition(new Point(nextX, nextY));
+            return;
+        }
+        // Copy backwards when the source region must survive the overwrite.
+        // The viewport is opaque and fully painted, so a screen-space blit
+        // carries the already-drawn pixels; only the uncovered strips repaint.
+        int copyFromX = Math.max(dx, 0);
+        int copyFromY = Math.max(dy, 0);
+        int copyWidth = width - Math.abs(dx);
+        int copyHeight = height - Math.abs(dy);
+        if (copyWidth > 0 && copyHeight > 0) {
+            Graphics graphics = viewport.getGraphics();
+            if (graphics != null) {
+                graphics.copyArea(copyFromX, copyFromY, copyWidth, copyHeight, -dx, -dy);
+                graphics.dispose();
+            }
+        }
+        if (Math.abs(dx) < width) {
+            int stripX = dx > 0 ? width - dx : 0;
+            viewport.repaint(stripX, 0, Math.abs(dx), height);
+        }
+        if (Math.abs(dy) < height) {
+            int stripY = dy > 0 ? height - dy : 0;
+            int stripWidth = width - Math.abs(dx);
+            int stripLeft = dx > 0 ? 0 : Math.abs(dx);
+            viewport.repaint(stripLeft, stripY, stripWidth, Math.abs(dy));
+        }
+        translateCameraPixels(dx, dy);
         viewport.setViewPosition(new Point(nextX, nextY));
+    }
+
+    /** Verify hook: pans reuse the painted pixels instead of invalidating the canvas. */
+    boolean verifyPanBlitKeepsCanvasClean() {
+        javax.swing.JViewport viewport = owningViewport();
+        if (viewport == null) {
+            return false;
+        }
+        RepaintManager manager = RepaintManager.currentManager(this);
+        manager.markCompletelyClean(this);
+        panViewportTo(viewport, viewport.getViewPosition().x + 30,
+                viewport.getViewPosition().y + 18);
+        Rectangle dirty = manager.getDirtyRegion(this);
+        Point translate = consumeCameraTranslate();
+        return dirty.isEmpty() && translate != null && translate.x == 30 && translate.y == 18;
     }
 
     private void endMapPan() {
@@ -852,6 +947,11 @@ public final class SimulationCanvas extends JComponent {
         canvas.fill(head);
     }
 
+    /** Verify hook: Shift held while placing snaps the point to the cell center. */
+    static UiPoint snapPointToCellCenter(boolean snap, UiCell cell, UiPoint point) {
+        return snap && cell != null ? cell.center() : point;
+    }
+
     private void sendCell(MouseEvent event) {
         UiCell cell = cellAt(event.getX(), event.getY());
         if (cell == null || cell.equals(lastDraggedCell)) {
@@ -859,27 +959,27 @@ public final class SimulationCanvas extends JComponent {
         }
         lastDraggedCell = cell;
         // Route-point tools want the exact world coordinate under the pointer;
-        // cell tools ignore the second argument.
+        // cell tools ignore the second argument. Shift snaps to the cell center.
         UiPoint point = new UiPoint((float) canvasToWorldX(event.getX()),
                 (float) canvasToWorldY(event.getY()));
-        cellHandler.accept(cell, point);
+        cellHandler.accept(cell, snapPointToCellCenter(event.isShiftDown(), cell, point));
     }
 
     private int worldToCanvasX(double worldX) {
-        return Math.round((float) (PADDING + worldX * zoom));
+        return Math.round((float) (PADDING + cameraTranslateX + worldX * zoom));
     }
 
     private int worldToCanvasY(double worldY) {
         // The display origin is the bottom-left: world y grows upward on screen.
-        return Math.round((float) (PADDING + (snapshot.height() - worldY) * zoom));
+        return Math.round((float) (PADDING + cameraTranslateY + (snapshot.height() - worldY) * zoom));
     }
 
     private float worldToCanvasXFloat(float worldX) {
-        return (float) (PADDING + worldX * zoom);
+        return (float) (PADDING + cameraTranslateX + worldX * zoom);
     }
 
     private float worldToCanvasYFloat(float worldY) {
-        return (float) (PADDING + (snapshot.height() - worldY) * zoom);
+        return (float) (PADDING + cameraTranslateY + (snapshot.height() - worldY) * zoom);
     }
 
     private double canvasToWorldX(int canvasX) {
@@ -891,11 +991,11 @@ public final class SimulationCanvas extends JComponent {
     }
 
     double worldXAtCanvas(double canvasX) {
-        return (canvasX - PADDING) / zoom;
+        return (canvasX - PADDING - cameraTranslateX) / zoom;
     }
 
     double worldYAtCanvas(double canvasY) {
-        return snapshot.height() - (canvasY - PADDING) / zoom;
+        return snapshot.height() - (canvasY - PADDING - cameraTranslateY) / zoom;
     }
 
     private int worldLengthToPixels(double worldLength) {

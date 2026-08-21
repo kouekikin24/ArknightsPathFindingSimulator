@@ -325,6 +325,14 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "Rejected checkpoint update did not flash the list or explain itself");
                 }
+                if (!workbench.verifyShortcutActions()) {
+                    throw new IllegalStateException(
+                            "Delete/Esc shortcuts did not act on the session");
+                }
+                if (!workbench.verifyEnterUpdatesCheckpoint()) {
+                    throw new IllegalStateException(
+                            "Enter in a checkpoint field did not update the selected row");
+                }
             });
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -452,6 +460,8 @@ public final class SimulatorUiMain {
                 verifyZoomAnchor(canvas);
                 verifyBrowsePan(snapshot);
                 verifyNonPrimaryButtonsDoNotEdit(snapshot);
+                verifyPanCameraTranslate(snapshot);
+                verifyPanBlitKeepsCanvasClean(snapshot);
                 verifyTrajectoryTooltip(canvas);
                 verifyHoverInvalidation(snapshot);
                 verifyCanvasPaint(canvas, 800, 560);
@@ -539,45 +549,33 @@ public final class SimulatorUiMain {
             throw new IllegalStateException("Leaving browse mode did not restore map editing");
         }
 
-        // Middle-button drag pans under any tool, without invoking an edit.
+        // Right-button drag pans under any tool and never invokes an edit;
+        // middle and left buttons no longer pan outside browse mode.
+        viewport.setViewPosition(new Point(200, 180));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
+                MouseEvent.BUTTON3_DOWN_MASK, 200, 180, 1, false, MouseEvent.BUTTON3));
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
+                MouseEvent.BUTTON3_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
+        Point rightPannedView = viewport.getViewPosition();
+        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
+                160, 150, 1, false, MouseEvent.BUTTON3));
+        if (rightPannedView.x != 240 || rightPannedView.y != 210) {
+            throw new IllegalStateException("Right-button drag did not pan the viewport");
+        }
+        if (editCount[0] != 1) {
+            throw new IllegalStateException("Right-button pan invoked an editor action");
+        }
+
         viewport.setViewPosition(new Point(200, 180));
         canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
                 MouseEvent.BUTTON2_DOWN_MASK, 200, 180, 1, false, MouseEvent.BUTTON2));
         canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
                 MouseEvent.BUTTON2_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
-        Point middlePannedView = viewport.getViewPosition();
         canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
                 160, 150, 1, false, MouseEvent.BUTTON2));
-        if (middlePannedView.x != 240 || middlePannedView.y != 210) {
-            throw new IllegalStateException("Middle-button drag did not pan the viewport");
-        }
-        if (editCount[0] != 1) {
-            throw new IllegalStateException("Middle-button pan invoked an editor action");
-        }
-
-        // Space+left-drag pans under any tool and marks the hold as used for
-        // panning, so the release does not toggle playback.
-        canvas.setSpaceDown(true);
-        viewport.setViewPosition(new Point(200, 180));
-        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_PRESSED, 0L,
-                MouseEvent.BUTTON1_DOWN_MASK, 200, 180, 1, false, MouseEvent.BUTTON1));
-        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_DRAGGED, 0L,
-                MouseEvent.BUTTON1_DOWN_MASK, 160, 150, 0, false, MouseEvent.NOBUTTON));
-        Point spacePannedView = viewport.getViewPosition();
-        canvas.dispatchEvent(new MouseEvent(canvas, MouseEvent.MOUSE_RELEASED, 0L, 0,
-                160, 150, 1, false, MouseEvent.BUTTON1));
-        canvas.setSpaceDown(false);
-        if (spacePannedView.x != 240 || spacePannedView.y != 210) {
-            throw new IllegalStateException("Space+left drag did not pan the viewport");
-        }
-        if (!canvas.consumeSpacePanUsed()) {
-            throw new IllegalStateException("Space pan was not recorded for the release guard");
-        }
-        if (canvas.consumeSpacePanUsed()) {
-            throw new IllegalStateException("Space pan flag was not consumed once");
-        }
-        if (editCount[0] != 1) {
-            throw new IllegalStateException("Space pan invoked an editor action");
+        Point afterMiddle = viewport.getViewPosition();
+        if (afterMiddle.x != 200 || afterMiddle.y != 180) {
+            throw new IllegalStateException("Middle-button drag still pans after the rebinding");
         }
     }
 
@@ -599,6 +597,65 @@ public final class SimulatorUiMain {
                 point.x, point.y, 1, false, MouseEvent.BUTTON1));
         if (editCount[0] != 1) {
             throw new IllegalStateException("The primary button no longer edits after the button guard");
+        }
+    }
+
+    /**
+     * The pan camera offset shifts world-to-canvas math one-to-one and is
+     * consumed once by the viewport listener; Shift+click placement snaps to
+     * the cell center.
+     */
+    private static void verifyPanCameraTranslate(UiSnapshot snapshot) {
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
+        canvas.setSnapshot(snapshot);
+        canvas.setViewportSize(800, 560);
+        canvas.setZoom(canvas.fitZoom());
+        Point before = canvas.canvasPointForWorld(3.5d, 2.5d);
+        canvas.translateCameraPixels(40, -25);
+        Point shifted = canvas.canvasPointForWorld(3.5d, 2.5d);
+        if (shifted.x != before.x + 40 || shifted.y != before.y - 25) {
+            throw new IllegalStateException("Camera translate did not shift world-to-canvas math");
+        }
+        double worldX = canvas.worldXAtCanvas(shifted.x);
+        if (Math.abs(worldX - 3.5d) > 0.01d) {
+            throw new IllegalStateException("Camera translate broke the inverse mapping");
+        }
+        Point consumed = canvas.consumeCameraTranslate();
+        if (consumed == null || consumed.x != 40 || consumed.y != -25
+                || canvas.consumeCameraTranslate() != null) {
+            throw new IllegalStateException("Camera translate was not consumed exactly once");
+        }
+        UiPoint snapped = SimulationCanvas.snapPointToCellCenter(true,
+                new UiCell(3, 2), new UiPoint(3.9f, 2.1f));
+        if (snapped.x() != 3.5f || snapped.y() != 2.5f) {
+            throw new IllegalStateException("Shift placement did not snap to the cell center");
+        }
+        UiPoint free = SimulationCanvas.snapPointToCellCenter(false,
+                new UiCell(3, 2), new UiPoint(3.9f, 2.1f));
+        if (free.x() != 3.9f || free.y() != 2.1f) {
+            throw new IllegalStateException("Plain placement lost its exact coordinates");
+        }
+    }
+
+    /** A drag pan must not invalidate the canvas: the blit carries the pixels. */
+    private static void verifyPanBlitKeepsCanvasClean(UiSnapshot snapshot) {
+        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
+        canvas.setSnapshot(snapshot);
+        canvas.setViewportSize(320, 240);
+        canvas.setZoom(100d);
+        JScrollPane scrollPane = new JScrollPane(canvas);
+        scrollPane.setSize(320, 240);
+        scrollPane.doLayout();
+        javax.swing.JViewport viewport = scrollPane.getViewport();
+        viewport.setExtentSize(new Dimension(300, 220));
+        viewport.setViewSize(canvas.getPreferredSize());
+        viewport.setViewPosition(new Point(200, 180));
+        if (!canvas.verifyPanBlitKeepsCanvasClean()) {
+            throw new IllegalStateException("A drag pan invalidated the whole canvas");
+        }
+        // The leftover translate was consumed by the hook; nothing else changes.
+        if (viewport.getViewPosition().x != 230 || viewport.getViewPosition().y != 198) {
+            throw new IllegalStateException("Pan did not move the view pixel-for-pixel");
         }
     }
 

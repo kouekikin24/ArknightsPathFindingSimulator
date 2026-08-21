@@ -37,7 +37,7 @@ final class PlaybackController {
             return;
         }
         playButton.setText("Ⅱ");
-        playButton.setToolTipText("暂停（空格）");
+        playButton.setToolTipText("暂停（Esc）");
         timer.start();
     }
 
@@ -45,7 +45,7 @@ final class PlaybackController {
         timer.stop();
         playButton.setSelected(false);
         playButton.setText("▶");
-        playButton.setToolTipText("运行（空格）");
+        playButton.setToolTipText("运行");
     }
 
     private void advance() {

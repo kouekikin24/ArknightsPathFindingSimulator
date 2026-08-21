@@ -30,7 +30,9 @@ final class ComponentInspector {
 
     private final JFrame frame;
     private final JComponent glass;
+    private final javax.swing.Timer armTimer;
     private boolean armed;
+    private boolean ctrlHeld;
     private JComponent target;
 
     static void install(JFrame frame) {
@@ -40,6 +42,16 @@ final class ComponentInspector {
     private ComponentInspector(JFrame frame) {
         this.frame = frame;
         this.glass = new GlassPane();
+        this.armTimer = new javax.swing.Timer(200, event -> {
+            // Ctrl+Z and friends flick the modifier briefly; only a deliberate
+            // bare-Ctrl hold arms the overlay.
+            if (ctrlHeld) {
+                armed = true;
+                glass.setVisible(true);
+                updateTargetUnderMouse();
+            }
+        });
+        this.armTimer.setRepeats(false);
         frame.setGlassPane(glass);
         Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
             if (event instanceof KeyEvent key) {
@@ -51,17 +63,27 @@ final class ComponentInspector {
     }
 
     private void onKey(KeyEvent key) {
-        if (key.getKeyCode() != KeyEvent.VK_CONTROL) {
+        if (key.getID() == KeyEvent.KEY_PRESSED && key.getKeyCode() == KeyEvent.VK_CONTROL) {
+            ctrlHeld = true;
+            if (!armed) {
+                armTimer.restart();
+            }
             return;
         }
-        if (key.getID() == KeyEvent.KEY_PRESSED && !armed) {
-            armed = true;
-            glass.setVisible(true);
-            updateTargetUnderMouse();
-        } else if (key.getID() == KeyEvent.KEY_RELEASED && armed) {
-            armed = false;
-            target = null;
-            glass.setVisible(false);
+        if (key.getID() == KeyEvent.KEY_RELEASED && key.getKeyCode() == KeyEvent.VK_CONTROL) {
+            ctrlHeld = false;
+            armTimer.stop();
+            if (armed) {
+                armed = false;
+                target = null;
+                glass.setVisible(false);
+            }
+            return;
+        }
+        // Any other key (Z, wheel-ctrl combos come through as keys too) means
+        // this Ctrl press is a chord, not an inspector hold.
+        if (key.getID() == KeyEvent.KEY_PRESSED) {
+            armTimer.stop();
         }
     }
 
