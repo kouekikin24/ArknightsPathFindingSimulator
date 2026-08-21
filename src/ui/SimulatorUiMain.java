@@ -305,6 +305,26 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "Coordinate spinner rejected or mangled a 4-decimal value");
                 }
+                if (!workbench.verifyComponentIds()) {
+                    throw new IllegalStateException(
+                            "Interactive controls lack unique inspector IDs");
+                }
+                if (!workbench.verifyCheckpointAutoSelected()) {
+                    throw new IllegalStateException(
+                            "Checkpoint list did not keep a selected row with echoed values");
+                }
+                if (!workbench.verifySpinnerTypingNormalization()) {
+                    throw new IllegalStateException(
+                            "Spinner typing normalized IME text or was rewritten mid-edit");
+                }
+                if (!workbench.verifyUpdateCommitsPendingEditorText()) {
+                    throw new IllegalStateException(
+                            "Checkpoint update ignored text that was typed but never committed");
+                }
+                if (!workbench.verifyUpdateWithoutSelectionFlashesList()) {
+                    throw new IllegalStateException(
+                            "Rejected checkpoint update did not flash the list or explain itself");
+                }
             });
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();

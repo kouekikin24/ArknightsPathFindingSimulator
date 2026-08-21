@@ -66,7 +66,8 @@ public final class SimulatorWorkbench extends JFrame {
     private Color LABEL_TEXT = theme.labelText();
 
     private final SimulationSession session = new SimulationSession();
-    private final SimulationCanvas canvas = new SimulationCanvas(this::applyEditorTool);
+    private final SimulationCanvas canvas = ComponentIds.tag(
+            new SimulationCanvas(this::applyEditorTool), "M0", "地图画布");
     private final JScrollPane mapScrollPane = new JScrollPane(canvas,
             JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
     private final ExecutorService seekExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -76,15 +77,20 @@ public final class SimulatorWorkbench extends JFrame {
     });
     private final AtomicLong seekRequest = new AtomicLong();
     private Future<?> pendingSeek;
-    private final JToggleButton playButton = new JToggleButton("▶");
-    private final JButton undoButton = iconButton("↶", "撤销上一步场景编辑（Ctrl+Z）");
-    private final JButton redoButton = iconButton("↷", "重做（Ctrl+Y）");
-    private final JComboBox<String> playbackRate = new JComboBox<>(new String[]{"1×", "3×", "10×"});
-    private final JCheckBox showPathToggle = new JCheckBox("路线图", false);
-    private final JCheckBox showTrajectoryToggle = new JCheckBox("实际轨迹", true);
-    private final JCheckBox coordinateToggle = new JCheckBox("坐标", false);
-    private final JSlider timelineSlider = new JSlider(0, 0, 0);
-    private final JTextField timeInput = new JTextField("0", 10);
+    private final JToggleButton playButton = ComponentIds.tag(new JToggleButton("▶"), "P2", "播放/暂停");
+    private final JButton undoButton = ComponentIds.tag(
+            iconButton("↶", "撤销上一步场景编辑（Ctrl+Z）"), "P4", "撤销");
+    private final JButton redoButton = ComponentIds.tag(iconButton("↷", "重做（Ctrl+Y）"), "P5", "重做");
+    private final JComboBox<String> playbackRate = ComponentIds.tag(
+            new JComboBox<>(new String[]{"1×", "3×", "10×"}), "P6", "回放速度");
+    private final JCheckBox showPathToggle = ComponentIds.tag(
+            new JCheckBox("路线图", false), "V1", "路线图开关");
+    private final JCheckBox showTrajectoryToggle = ComponentIds.tag(
+            new JCheckBox("实际轨迹", true), "V2", "实际轨迹开关");
+    private final JCheckBox coordinateToggle = ComponentIds.tag(
+            new JCheckBox("坐标", false), "V3", "格子坐标开关");
+    private final JSlider timelineSlider = ComponentIds.tag(new JSlider(0, 0, 0), "P7", "时间轴");
+    private final JTextField timeInput = ComponentIds.tag(new JTextField("0", 10), "P8", "精确时间输入");
     private final JLabel frameValue = valueLabel();
     private final JLabel timeValue = valueLabel();
     private final JLabel zoomValue = valueLabel();
@@ -105,45 +111,62 @@ public final class SimulatorWorkbench extends JFrame {
     // range, speed any finite value of at least 0.1, so an imported scenario
     // is never outside the editor's range (which would dead the step buttons
     // and clamp on edit).
-    private final JSpinner mapWidthSpinner = new JSpinner(new SpinnerNumberModel(12,
-            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1));
-    private final JSpinner mapHeightSpinner = new JSpinner(new SpinnerNumberModel(8,
-            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1));
-    private final JComboBox<UiMovementMode> movementModeBox = new JComboBox<>(UiMovementMode.values());
-    private final JSpinner speedSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(1.0d, 0.1d, (double) Float.MAX_VALUE, 0.1d)), 5);
-    private final JCheckBox diagonalToggle = new JCheckBox("允许斜向连线", true);
+    private final JSpinner mapWidthSpinner = ComponentIds.tag(integerSpinner(new SpinnerNumberModel(12,
+            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1)), "D1", "地图宽（格）");
+    private final JSpinner mapHeightSpinner = ComponentIds.tag(integerSpinner(new SpinnerNumberModel(8,
+            ScenarioCodec.MINIMUM_DIMENSION, ScenarioCodec.MAXIMUM_DIMENSION, 1)), "D2", "地图高（格）");
+    private final JComboBox<UiMovementMode> movementModeBox = ComponentIds.tag(
+            new JComboBox<>(UiMovementMode.values()), "R1", "移动类型");
+    private final JSpinner speedSpinner = ComponentIds.tag(cappedEditor(
+            decimalSpinner(new SpinnerNumberModel(1.0d, 0.1d, (double) Float.MAX_VALUE, 0.1d)), 5),
+            "R2", "移动速度");
+    private final JCheckBox diagonalToggle = ComponentIds.tag(
+            new JCheckBox("允许斜向连线", true), "R3", "允许斜向连线");
     private final javax.swing.DefaultListModel<String> unitModel = new javax.swing.DefaultListModel<>();
-    private final JList<String> unitList = new JList<>(unitModel);
-    private final JComboBox<UiCheckpointType> checkpointTypeBox = new JComboBox<>(UiCheckpointType.values());
+    private final JList<String> unitList = ComponentIds.tag(new JList<>(unitModel), "U1", "单位列表");
+    private final JComboBox<UiCheckpointType> checkpointTypeBox = ComponentIds.tag(
+            new JComboBox<>(UiCheckpointType.values()), "C3", "检查点类型");
     // Bounds match the scenario format: seconds is any non-negative finite
     // float, area any non-negative int, so an imported value is never outside
     // the editor's range (which would dead the step buttons and clamp on edit).
     // The editor width is capped separately so a huge maximum never widens it.
-    private final JSpinner checkpointSecondsSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d)), 6);
-    private final JSpinner checkpointAreaSpinner = cappedEditor(
-            new JSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5);
-    private final JSpinner checkpointXSpinner = coordinateSpinner();
-    private final JSpinner checkpointYSpinner = coordinateSpinner();
-    private final JSpinner spawnXSpinner = coordinateSpinner();
-    private final JSpinner spawnYSpinner = coordinateSpinner();
-    private final JSpinner endpointXSpinner = coordinateSpinner();
-    private final JSpinner endpointYSpinner = coordinateSpinner();
+    private final JSpinner checkpointSecondsSpinner = ComponentIds.tag(cappedEditor(
+            decimalSpinner(new SpinnerNumberModel(1.0d, 0.0d, (double) Float.MAX_VALUE, 0.1d)), 6),
+            "C4", "检查点参数·秒数");
+    private final JSpinner checkpointAreaSpinner = ComponentIds.tag(cappedEditor(
+            integerSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5),
+            "C5", "检查点参数·区块");
+    private final JSpinner checkpointXSpinner = ComponentIds.tag(coordinateSpinner(), "C1", "检查点坐标 X");
+    private final JSpinner checkpointYSpinner = ComponentIds.tag(coordinateSpinner(), "C2", "检查点坐标 Y");
+    private final JSpinner spawnXSpinner = ComponentIds.tag(coordinateSpinner(), "S1", "起点 X");
+    private final JSpinner spawnYSpinner = ComponentIds.tag(coordinateSpinner(), "S2", "起点 Y");
+    private final JSpinner endpointXSpinner = ComponentIds.tag(coordinateSpinner(), "E1", "终点 X");
+    private final JSpinner endpointYSpinner = ComponentIds.tag(coordinateSpinner(), "E2", "终点 Y");
     private final java.awt.CardLayout routePointEditorCards = new java.awt.CardLayout();
     private final JPanel routePointEditorSlot = new JPanel(routePointEditorCards);
     private final JPanel spawnEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
     private final JPanel endpointEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
     private JLabel checkpointCoordLabel;
     private JPanel checkpointCoordPanel;
-    private final JButton addCheckpointButton = new JButton("添加");
-    private final JSpinner stunSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d)));
-    private final JSpinner pushXSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));
-    private final JSpinner pushYSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d)));
-    private final JSpinner pushSecondsSpinner = narrowSpinner(new JSpinner(new SpinnerNumberModel(0.5d, 0.0d, 10.0d, 0.1d)));
-    private final JToggleButton bindToggle = new JToggleButton("束缚");
+    private JScrollPane checkpointListScroll;
+    private javax.swing.Timer checkpointFlashTimer;
+    private final JButton addCheckpointButton = ComponentIds.tag(new JButton("添加"), "C7", "添加检查点");
+    private final JSpinner stunSecondsSpinner = ComponentIds.tag(
+            narrowSpinner(decimalSpinner(new SpinnerNumberModel(1.0d, 0.0d, 60.0d, 0.1d))),
+            "B1", "眩晕秒数");
+    private final JSpinner pushXSpinner = ComponentIds.tag(
+            narrowSpinner(decimalSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d))),
+            "B3", "击退 X 速度");
+    private final JSpinner pushYSpinner = ComponentIds.tag(
+            narrowSpinner(decimalSpinner(new SpinnerNumberModel(0.0d, -10.0d, 10.0d, 0.5d))),
+            "B4", "击退 Y 速度");
+    private final JSpinner pushSecondsSpinner = ComponentIds.tag(
+            narrowSpinner(decimalSpinner(new SpinnerNumberModel(0.5d, 0.0d, 10.0d, 0.1d))),
+            "B5", "击退持续秒数");
+    private final JToggleButton bindToggle = ComponentIds.tag(new JToggleButton("束缚"), "B7", "束缚开关");
     private final javax.swing.DefaultListModel<String> checkpointModel = new javax.swing.DefaultListModel<>();
-    private final JList<String> checkpointList = new JList<>(checkpointModel);
+    private final JList<String> checkpointList = ComponentIds.tag(
+            new JList<>(checkpointModel), "C12", "检查点列表");
     private final ViewportCamera camera = new ViewportCamera(mapScrollPane, canvas, zoomValue);
     private final PlaybackController playback = new PlaybackController(
             session, playButton, playbackRate, operationStatus, this::refresh);
@@ -153,8 +176,8 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
         camera.requestFit();
     });
-    private final JButton themeToggleButton = iconButton(theme == UiTheme.DARK ? "☀" : "☾",
-            "切换夜间/日间模式");
+    private final JButton themeToggleButton = ComponentIds.tag(
+            iconButton(theme == UiTheme.DARK ? "☀" : "☾", "切换夜间/日间模式"), "V4", "主题切换");
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
@@ -202,6 +225,8 @@ public final class SimulatorWorkbench extends JFrame {
         refresh(session.snapshotFrame());
         pack();
         setLocationByPlatform(true);
+        // Hold Ctrl and hover any control to see its component-map ID.
+        ComponentInspector.install(this);
         // Every non-input control is unfocusable, so without this no component
         // owns the window focus and WHEN_IN_FOCUSED_WINDOW keys never fire.
         // The slider is the safe focus owner: it only claims the arrow keys.
@@ -231,7 +256,7 @@ public final class SimulatorWorkbench extends JFrame {
         title.setForeground(VALUE);
         toolbar.add(title);
         toolbar.addSeparator(new Dimension(16, 1));
-        JButton step = iconButton("⏭", "推进一帧（N）");
+        JButton step = ComponentIds.tag(iconButton("⏭", "推进一帧（N）"), "P1", "推进一帧");
         step.addActionListener(event -> stepOneFrame());
         toolbar.add(step);
         playButton.setToolTipText("运行（空格）");
@@ -239,7 +264,7 @@ public final class SimulatorWorkbench extends JFrame {
         playButton.setPreferredSize(new Dimension(38, 29));
         playButton.addActionListener(event -> playback.toggle());
         toolbar.add(playButton);
-        JButton reset = iconButton("↺", "重置运行（R）");
+        JButton reset = ComponentIds.tag(iconButton("↺", "重置运行（R）"), "P3", "重置运行");
         reset.addActionListener(event -> resetRun());
         toolbar.add(reset);
         undoButton.addActionListener(event -> undoEdit());
@@ -269,13 +294,16 @@ public final class SimulatorWorkbench extends JFrame {
         coordinateToggle.addActionListener(event -> canvas.setShowCoordinates(coordinateToggle.isSelected()));
         toolbar.add(coordinateToggle);
         toolbar.addSeparator(new Dimension(10, 1));
-        JButton exportScenarioButton = iconButton("导出场景", "把当前地图与路线保存为可导入的文本文件");
+        JButton exportScenarioButton = ComponentIds.tag(
+                iconButton("导出场景", "把当前地图与路线保存为可导入的文本文件"), "F1", "导出场景");
         exportScenarioButton.addActionListener(event -> scenarioFiles.exportScenario());
         toolbar.add(exportScenarioButton);
-        JButton importScenarioButton = iconButton("导入场景", "从文本文件载入地图与路线");
+        JButton importScenarioButton = ComponentIds.tag(
+                iconButton("导入场景", "从文本文件载入地图与路线"), "F2", "导入场景");
         importScenarioButton.addActionListener(event -> scenarioFiles.importScenario());
         toolbar.add(importScenarioButton);
-        JButton exportTraceButton = iconButton("导出轨迹", "把已生成帧导出为逐帧 CSV");
+        JButton exportTraceButton = ComponentIds.tag(
+                iconButton("导出轨迹", "把已生成帧导出为逐帧 CSV"), "F3", "导出轨迹");
         exportTraceButton.addActionListener(event -> scenarioFiles.exportTrace());
         toolbar.add(exportTraceButton);
         themeToggleButton.addActionListener(event -> toggleTheme());
@@ -315,7 +343,7 @@ public final class SimulatorWorkbench extends JFrame {
         timeInput.setColumns(11);
         timeInput.setToolTipText("输入帧号、n/30 或可精确换算为帧的秒数");
         labels.add(timeInput);
-        JButton seek = new JButton("定位");
+        JButton seek = ComponentIds.tag(new JButton("定位"), "P9", "定位到精确帧");
         seek.setFocusable(false);
         seek.setToolTipText("跳转到精确帧");
         seek.addActionListener(event -> seekFromInput());
@@ -384,13 +412,14 @@ public final class SimulatorWorkbench extends JFrame {
         addFormRow(section, c, 1, "高", mapHeightSpinner);
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         actions.setOpaque(false);
-        JButton fresh = new JButton("新建");
+        JButton fresh = ComponentIds.tag(new JButton("新建"), "D3", "新建地图");
         fresh.setFocusable(false);
         fresh.addActionListener(event -> {
+            commitSpinnerEdits(mapWidthSpinner, mapHeightSpinner);
             runEdit(() -> session.newScenario(intValue(mapWidthSpinner), intValue(mapHeightSpinner)));
             camera.requestFit();
         });
-        JButton demo = new JButton("示例");
+        JButton demo = ComponentIds.tag(new JButton("示例"), "D4", "载入示例地图");
         demo.setFocusable(false);
         demo.addActionListener(event -> {
             runEdit(session::loadDemoScenario);
@@ -414,12 +443,12 @@ public final class SimulatorWorkbench extends JFrame {
         section.add(new JScrollPane(unitList), BorderLayout.CENTER);
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         actions.setOpaque(false);
-        JButton add = new JButton("添加");
+        JButton add = ComponentIds.tag(new JButton("添加"), "U2", "添加单位");
         add.setFocusable(false);
         add.setToolTipText("复制当前路线为新单位");
         add.addActionListener(event -> runEdit(session::addDraft));
         actions.add(add);
-        JButton remove = new JButton("删除");
+        JButton remove = ComponentIds.tag(new JButton("删除"), "U3", "删除单位");
         remove.setFocusable(false);
         remove.setToolTipText("删除选中的单位（至少保留一个）");
         remove.addActionListener(event -> {
@@ -470,15 +499,21 @@ public final class SimulatorWorkbench extends JFrame {
         JPanel tools = new JPanel(new GridLayout(2, 4, 4, 4));
         tools.setOpaque(false);
         ButtonGroup group = new ButtonGroup();
-        tools.add(toolButton(group, EditorTool.OPEN, new SwatchIcon(canvas, UiTerrain.OPEN), "通路"));
-        tools.add(toolButton(group, EditorTool.BOX, new SwatchIcon(canvas, UiTerrain.BOX), "箱子"));
-        tools.add(toolButton(group, EditorTool.PIT, new SwatchIcon(canvas, UiTerrain.PIT), "坑"));
-        tools.add(toolButton(group, EditorTool.WALL, new SwatchIcon(canvas, UiTerrain.WALL), "墙"));
-        tools.add(toolButton(group, EditorTool.SPAWN, "S", "起点"));
-        tools.add(toolButton(group, EditorTool.ENDPOINT, "E", "终点"));
-        tools.add(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"));
-        tools.add(toolButton(group, EditorTool.BROWSE, "浏览",
-                "浏览地图：左键拖动平移（任意工具下中键或空格+左键也可平移）"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.OPEN,
+                new SwatchIcon(canvas, UiTerrain.OPEN), "通路"), "T1", "通路工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.BOX,
+                new SwatchIcon(canvas, UiTerrain.BOX), "箱子"), "T2", "箱子工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.PIT,
+                new SwatchIcon(canvas, UiTerrain.PIT), "坑"), "T3", "坑工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.WALL,
+                new SwatchIcon(canvas, UiTerrain.WALL), "墙"), "T4", "墙工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.SPAWN, "S", "起点"), "T5", "起点工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.ENDPOINT, "E", "终点"), "T6", "终点工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.CHECKPOINT, "+", "添加移动检查点"),
+                "T7", "检查点工具"));
+        tools.add(ComponentIds.tag(toolButton(group, EditorTool.BROWSE, "浏览",
+                        "浏览地图：左键拖动平移（任意工具下中键或空格+左键也可平移）"),
+                "T8", "浏览（平移）工具"));
         GridBagConstraints c = baseConstraints();
         c.gridx = 0;
         c.gridy = 0;
@@ -571,10 +606,11 @@ public final class SimulatorWorkbench extends JFrame {
         JPanel section = section("战斗状态");
         section.setLayout(new GridBagLayout());
 
-        JButton stunButton = new JButton("注入");
+        JButton stunButton = ComponentIds.tag(new JButton("注入"), "B2", "眩晕注入");
         stunButton.setToolTipText("下一帧起眩晕指定秒数");
         stunButton.setFocusable(false);
         stunButton.addActionListener(event -> {
+            commitSpinnerEdits(stunSecondsSpinner);
             try {
                 session.applyStun(floatValue(stunSecondsSpinner));
                 operationStatus.setText("已安排：下一帧起眩晕 " + floatValue(stunSecondsSpinner) + " 秒");
@@ -586,10 +622,11 @@ public final class SimulatorWorkbench extends JFrame {
         });
         addCombatRow(section, 0, "眩晕", stunSecondsSpinner, new JLabel("秒"), stunButton);
 
-        JButton pushButton = new JButton("注入");
+        JButton pushButton = ComponentIds.tag(new JButton("注入"), "B6", "击退注入");
         pushButton.setToolTipText("下一帧起以给定速度(格/秒)推动指定秒数");
         pushButton.setFocusable(false);
         pushButton.addActionListener(event -> {
+            commitSpinnerEdits(pushXSpinner, pushYSpinner, pushSecondsSpinner);
             try {
                 session.applyDisplacement(floatValue(pushXSpinner), floatValue(pushYSpinner),
                         floatValue(pushSecondsSpinner));
@@ -705,38 +742,28 @@ public final class SimulatorWorkbench extends JFrame {
             if (refreshing || event.getValueIsAdjusting()) {
                 return;
             }
-            int index = checkpointList.getSelectedIndex();
-            if (index < 0 || index >= checkpointModel.size()) {
-                return;
-            }
-            UiCheckpoint selected = session.snapshot().checkpoints().get(index);
-            checkpointTypeBox.setSelectedItem(selected.type());
-            checkpointSecondsSpinner.setValue((double) selected.value());
-            checkpointAreaSpinner.setValue(selected.area());
-            if (selected.point() != null) {
-                checkpointXSpinner.setValue((double) selected.point().x());
-                checkpointYSpinner.setValue((double) selected.point().y());
-            }
+            echoCheckpointIntoPanel(checkpointList.getSelectedIndex());
         });
-        section.add(new JScrollPane(checkpointList), BorderLayout.CENTER);
+        checkpointListScroll = new JScrollPane(checkpointList);
+        section.add(checkpointListScroll, BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new GridLayout(2, 3, 4, 4));
         actions.setOpaque(false);
         addCheckpointButton.setToolTipText("加入列表（选中项之前插入，未选中则加到末尾）");
         addCheckpointButton.addActionListener(event -> addCheckpointFromPanel());
         actions.add(addCheckpointButton);
-        JButton update = new JButton("更新");
+        JButton update = ComponentIds.tag(new JButton("更新"), "C6", "更新选中的检查点");
         update.setFocusable(false);
         update.setToolTipText("把选中的检查点改为当前类型和参数");
         update.addActionListener(event -> updateSelectedCheckpoint());
         actions.add(update);
-        JButton up = iconButton("↑", "上移选中的检查点");
+        JButton up = ComponentIds.tag(iconButton("↑", "上移选中的检查点"), "C8", "上移检查点");
         up.addActionListener(event -> moveSelectedCheckpoint(-1));
         actions.add(up);
-        JButton down = iconButton("↓", "下移选中的检查点");
+        JButton down = ComponentIds.tag(iconButton("↓", "下移选中的检查点"), "C9", "下移检查点");
         down.addActionListener(event -> moveSelectedCheckpoint(1));
         actions.add(down);
-        JButton remove = iconButton("−", "删除选中的检查点");
+        JButton remove = ComponentIds.tag(iconButton("−", "删除选中的检查点"), "C10", "删除检查点");
         remove.addActionListener(event -> {
             int index = checkpointList.getSelectedIndex();
             if (index < 0) {
@@ -749,7 +776,7 @@ public final class SimulatorWorkbench extends JFrame {
             }
         });
         actions.add(remove);
-        JButton clear = iconButton("×", "清空检查点");
+        JButton clear = ComponentIds.tag(iconButton("×", "清空检查点"), "C11", "清空检查点");
         clear.addActionListener(event -> {
             try {
                 runEdit(session::clearCheckpoints);
@@ -873,6 +900,7 @@ public final class SimulatorWorkbench extends JFrame {
             operationStatus.setText("坐标类检查点请在地图上用 + 工具放置");
             return;
         }
+        commitSpinnerEdits(checkpointSecondsSpinner, checkpointAreaSpinner);
         int index = checkpointList.getSelectedIndex();
         try {
             if (index >= 0) {
@@ -891,8 +919,11 @@ public final class SimulatorWorkbench extends JFrame {
         int index = checkpointList.getSelectedIndex();
         if (index < 0) {
             operationStatus.setText("请先在列表中选择一个检查点");
+            flashCheckpointListBorder();
             return;
         }
+        commitSpinnerEdits(checkpointSecondsSpinner, checkpointAreaSpinner,
+                checkpointXSpinner, checkpointYSpinner);
         try {
             UiCheckpointType type = selectedCheckpointType();
             UiPoint point = type.hasPoint()
@@ -905,6 +936,23 @@ public final class SimulatorWorkbench extends JFrame {
             return;
         }
         checkpointList.setSelectedIndex(index);
+    }
+
+    /** Rejected updates flash the list frame so the hint has a visible anchor. */
+    private void flashCheckpointListBorder() {
+        if (checkpointListScroll == null) {
+            return;
+        }
+        if (checkpointFlashTimer != null && checkpointFlashTimer.isRunning()) {
+            checkpointFlashTimer.restart();
+            return;
+        }
+        Border original = checkpointListScroll.getBorder();
+        checkpointListScroll.setBorder(BorderFactory.createLineBorder(theme.rejection(), 2));
+        checkpointFlashTimer = new javax.swing.Timer(600,
+                event -> checkpointListScroll.setBorder(original));
+        checkpointFlashTimer.setRepeats(false);
+        checkpointFlashTimer.start();
     }
 
     private void moveSelectedCheckpoint(int offset) {
@@ -1166,6 +1214,136 @@ public final class SimulatorWorkbench extends JFrame {
         return Math.abs(committed - 1.1222d) < 1e-9;
     }
 
+    /** Verify hook: every interactive control carries a unique inspector ID. */
+    boolean verifyComponentIds() {
+        java.util.Map<String, JComponent> seen = new java.util.LinkedHashMap<>();
+        if (!collectComponentIds(getContentPane(), seen) || seen.size() < 50) {
+            return false;
+        }
+        JSpinner.DefaultEditor editor = (JSpinner.DefaultEditor) checkpointXSpinner.getEditor();
+        return "C1".equals(checkpointXSpinner.getName())
+                && "C12".equals(checkpointList.getName())
+                && "M0".equals(canvas.getName())
+                && "P2".equals(playButton.getName())
+                // A spinner's inner text field resolves to the tagged spinner itself.
+                && ComponentIds.ownerOf(editor.getTextField()) == checkpointXSpinner
+                && "检查点坐标 X".equals(ComponentIds.labelOf(checkpointXSpinner));
+    }
+
+    private static boolean collectComponentIds(java.awt.Container root,
+                                               java.util.Map<String, JComponent> seen) {
+        for (Component child : root.getComponents()) {
+            if (ComponentIds.isTagged(child) && seen.put(child.getName(), (JComponent) child) != null) {
+                return false;
+            }
+            if (child instanceof java.awt.Container container
+                    && !collectComponentIds(container, seen)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Verify hook: a non-empty checkpoint list always keeps a selected row,
+     * and the fresh selection echoes its real values into the panel.
+     */
+    boolean verifyCheckpointAutoSelected() {
+        session.loadDemoScenario();
+        playback.stop();
+        invalidateSeek();
+        checkpointList.clearSelection();
+        refresh(session.snapshotFrame());
+        if (checkpointList.getSelectedIndex() != 0) {
+            return false;
+        }
+        double echoedX = ((Number) checkpointXSpinner.getValue()).doubleValue();
+        double expected = session.snapshot().checkpoints().get(0).point().x();
+        return Math.abs(echoedX - expected) < 1e-9;
+    }
+
+    /**
+     * Verify hook: text typed but never committed (the 更新 button is
+     * unfocusable, so it never blurs the field) is still applied by 更新.
+     */
+    boolean verifyUpdateCommitsPendingEditorText() {
+        session.loadDemoScenario();
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        javax.swing.JFormattedTextField field =
+                ((JSpinner.DefaultEditor) checkpointYSpinner.getEditor()).getTextField();
+        field.setText("1.1222");
+        updateSelectedCheckpoint();
+        double y = session.snapshot().checkpoints().get(0).point().y();
+        return Math.abs(y - 1.1222d) < 1e-6d;
+    }
+
+    /**
+     * Verify hook: full-width IME characters normalize to ASCII while typing,
+     * and ASCII typing is never rewritten mid-edit by the formatter.
+     */
+    boolean verifySpinnerTypingNormalization() {
+        try {
+            if (!typeIntoSpinner(checkpointYSpinner, "５。１２２２", "5.1222", 5.1222d)) {
+                return false;
+            }
+            if (!typeIntoSpinner(checkpointXSpinner, "1.2222", "1.2222", 1.2222d)) {
+                return false;
+            }
+            // Stepping after a typed commit must not throw: a Long/Double mix
+            // in the model would surface here as a ClassCastException.
+            Object next = ((SpinnerNumberModel) checkpointXSpinner.getModel()).getNextValue();
+            return next instanceof Number number
+                    && Math.abs(number.doubleValue() - 1.3222d) < 1e-9;
+        } finally {
+            checkpointXSpinner.setValue(0.5d);
+            checkpointYSpinner.setValue(0.5d);
+        }
+    }
+
+    /** Types one character at a time through the document filter, like a keyboard. */
+    private static boolean typeIntoSpinner(JSpinner spinner, String typed, String expectedText,
+                                           double expectedValue) {
+        javax.swing.JFormattedTextField field =
+                ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField();
+        try {
+            field.setText("");
+            StringBuilder progressive = new StringBuilder();
+            for (int i = 0; i < typed.length(); i++) {
+                field.getDocument().insertString(field.getCaretPosition(),
+                        typed.substring(i, i + 1), null);
+                progressive.append(ImeNumericFilter.normalize(typed.substring(i, i + 1)));
+                // The field must show exactly what was typed, never a rewrite.
+                if (!field.getText().equals(progressive.toString())) {
+                    return false;
+                }
+            }
+            if (!field.getText().equals(expectedText)) {
+                return false;
+            }
+            spinner.commitEdit();
+        } catch (javax.swing.text.BadLocationException | java.text.ParseException failure) {
+            return false;
+        }
+        double value = ((Number) spinner.getValue()).doubleValue();
+        return Math.abs(value - expectedValue) < 1e-9;
+    }
+
+    /** Verify hook: 更新 without a selection flashes the list border and says why. */
+    boolean verifyUpdateWithoutSelectionFlashesList() {
+        session.newScenario(6, 3);
+        playback.stop();
+        invalidateSeek();
+        refresh(session.snapshotFrame());
+        checkpointList.clearSelection();
+        updateSelectedCheckpoint();
+        Border border = checkpointListScroll.getBorder();
+        boolean flashed = border instanceof LineBorder line
+                && line.getLineColor().equals(theme.rejection());
+        return flashed && operationStatus.getText().contains("请先在列表中选择一个检查点");
+    }
+
     // ----- theming -----------------------------------------------------------
 
     private static UiTheme loadTheme() {
@@ -1418,6 +1596,21 @@ public final class SimulatorWorkbench extends JFrame {
         return List.copyOf(perUnit);
     }
 
+    /** Copies the selected checkpoint's type and parameters into the editor panel. */
+    private void echoCheckpointIntoPanel(int index) {
+        if (index < 0 || index >= checkpointModel.size()) {
+            return;
+        }
+        UiCheckpoint selected = session.snapshot().checkpoints().get(index);
+        checkpointTypeBox.setSelectedItem(selected.type());
+        checkpointSecondsSpinner.setValue((double) selected.value());
+        checkpointAreaSpinner.setValue(selected.area());
+        if (selected.point() != null) {
+            checkpointXSpinner.setValue((double) selected.point().x());
+            checkpointYSpinner.setValue((double) selected.point().y());
+        }
+    }
+
     private void refreshCheckpointList(UiSnapshot snapshot) {
         // Model rebuilds clear the JList selection (a clear() is a removal).
         // Remember and restore it so playback ticks never steal the user's
@@ -1431,6 +1624,14 @@ public final class SimulatorWorkbench extends JFrame {
         }
         if (selected >= 0 && selected < checkpointModel.size()) {
             checkpointList.setSelectedIndex(selected);
+        } else if (!checkpointModel.isEmpty()) {
+            // Always keep a row armed so 更新 has a target without an
+            // easy-to-miss list click first. The echo listener skips while
+            // refreshing, so typed spinner values are never clobbered; the
+            // fresh selection echoes explicitly, or 更新 would write the
+            // panel's factory defaults over the checkpoint's real values.
+            checkpointList.setSelectedIndex(0);
+            echoCheckpointIntoPanel(0);
         }
     }
 
@@ -1568,11 +1769,61 @@ public final class SimulatorWorkbench extends JFrame {
 
     /** Coordinate editors: 4-decimal display, typed values within range commit as-is. */
     private static JSpinner coordinateSpinner() {
-        JSpinner spinner = new JSpinner(new SpinnerNumberModel(0.5d, 0.0d,
-                (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d));
-        spinner.setEditor(new JSpinner.NumberEditor(spinner, "0.0###"));
         // Six columns: "1.2222" must stay fully visible while editing.
-        return cappedEditor(spinner, 6);
+        return cappedEditor(decimalSpinner(new SpinnerNumberModel(0.5d, 0.0d,
+                (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 6);
+    }
+
+    /**
+     * Decimal spinner with an explicit pattern editor. The default editor
+     * (NumberEditorFormatter) commits on every valid keystroke and rewrites
+     * the text mid-typing; a plain pattern-based NumberFormatter never does.
+     */
+    private static JSpinner decimalSpinner(SpinnerNumberModel model) {
+        JSpinner spinner = new JSpinner(model);
+        spinner.setEditor(new JSpinner.NumberEditor(spinner, "0.0###"));
+        swapFormatter(spinner, "0.0###", Double.class);
+        return spinner;
+    }
+
+    /** Integer spinner with the same no-rewrite, IME-safe editor as decimalSpinner. */
+    private static JSpinner integerSpinner(SpinnerNumberModel model) {
+        JSpinner spinner = new JSpinner(model);
+        spinner.setEditor(new JSpinner.NumberEditor(spinner, "#0"));
+        swapFormatter(spinner, "#0", Integer.class);
+        return spinner;
+    }
+
+    /**
+     * Installs the IME-normalizing formatter. The value class keeps parsed
+     * numbers in the model's own type so min/max comparisons never mix Long
+     * with Double and kill the step buttons.
+     */
+    private static void swapFormatter(JSpinner spinner, String pattern, Class<?> valueClass) {
+        JSpinner.DefaultEditor editor = (JSpinner.DefaultEditor) spinner.getEditor();
+        java.text.DecimalFormat format = new java.text.DecimalFormat(pattern,
+                java.text.DecimalFormatSymbols.getInstance(java.util.Locale.getDefault()));
+        ImeNumberFormatter formatter = new ImeNumberFormatter(format);
+        formatter.setValueClass(valueClass);
+        editor.getTextField().setFormatterFactory(
+                new javax.swing.text.DefaultFormatterFactory(formatter));
+    }
+
+    /**
+     * Tool buttons are unfocusable, so clicking one never blurs the spinner
+     * the user is typing in and the commit-on-blur never fires. Commit any
+     * pending editor text before an action reads the model; invalid text
+     * reverts to the last committed value, matching focus-loss behavior.
+     */
+    private static void commitSpinnerEdits(JSpinner... spinners) {
+        for (JSpinner spinner : spinners) {
+            try {
+                spinner.commitEdit();
+            } catch (java.text.ParseException invalid) {
+                ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField()
+                        .setValue(spinner.getValue());
+            }
+        }
     }
 
     /** Caps the editor's column width so a huge model maximum never widens the sidebar. */

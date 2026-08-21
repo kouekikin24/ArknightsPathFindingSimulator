@@ -73,20 +73,7 @@ public final class SimulationTime {
 
     /** Maps full-width digits and separators typed by a Chinese IME to ASCII. */
     private static String normalize(String text) {
-        StringBuilder out = new StringBuilder(text.length());
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (c >= '０' && c <= '９') {
-                out.append((char) ('0' + (c - '０')));
-            } else if (c == '／') {
-                out.append('/');
-            } else if (c == '．') {
-                out.append('.');
-            } else {
-                out.append(c);
-            }
-        }
-        return out.toString();
+        return ImeNumericFilter.normalize(text).replace('／', '/');
     }
 
     private static long toLong(BigInteger value, String message) {
