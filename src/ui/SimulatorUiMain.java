@@ -82,6 +82,7 @@ public final class SimulatorUiMain {
         verifyTerrainAlignment(after);
         verifyVectorDisplayFlip();
         verifyTheme(after);
+        verifyCoordinateLabels(after);
         verifyWorkbenchPolicies();
         System.out.println("UI session verification passed.");
     }
@@ -185,6 +186,72 @@ public final class SimulatorUiMain {
             graphics.dispose();
         }
         return image;
+    }
+
+    /**
+     * The coordinate toggle must paint labels into each cell's bottom-right
+     * corner only, and must stay silent when cells are too small to read.
+     */
+    private static void verifyCoordinateLabels(UiSnapshot snapshot) {
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                SimulationCanvas canvas = new SimulationCanvas(cell -> { });
+                canvas.setSnapshot(snapshot);
+                canvas.setViewportSize(800, 560);
+                canvas.setZoom(40d);
+                canvas.setSize(canvas.getPreferredSize());
+                canvas.setShowCoordinates(false);
+                BufferedImage off = paintCanvas(canvas);
+                canvas.setShowCoordinates(true);
+                BufferedImage on = paintCanvas(canvas);
+                // Probe cell (1,1): the label must touch only its bottom-right quarter.
+                Point center = canvas.canvasPointForWorld(1.5d, 1.5d);
+                int size = 40;
+                int left = center.x - size / 2;
+                int top = center.y - size / 2;
+                int changedBottomRight = 0;
+                int changedTopLeft = 0;
+                for (int y = top; y < top + size; y++) {
+                    for (int x = left; x < left + size; x++) {
+                        if (on.getRGB(x, y) == off.getRGB(x, y)) {
+                            continue;
+                        }
+                        if (x >= left + size / 2 && y >= top + size / 2) {
+                            changedBottomRight++;
+                        } else if (x < left + size / 2 && y < top + size / 2) {
+                            changedTopLeft++;
+                        }
+                    }
+                }
+                if (changedBottomRight == 0) {
+                    throw new IllegalStateException("Coordinate toggle painted no label pixels");
+                }
+                if (changedTopLeft != 0) {
+                    throw new IllegalStateException(
+                            "Coordinate label leaked outside the bottom-right corner");
+                }
+                // Tiny cells must suppress labels entirely.
+                canvas.setZoom(1d);
+                canvas.setSize(canvas.getPreferredSize());
+                canvas.setShowCoordinates(false);
+                BufferedImage tinyOff = paintCanvas(canvas);
+                canvas.setShowCoordinates(true);
+                BufferedImage tinyOn = paintCanvas(canvas);
+                for (int y = 0; y < tinyOff.getHeight(); y++) {
+                    for (int x = 0; x < tinyOff.getWidth(); x++) {
+                        if (tinyOn.getRGB(x, y) != tinyOff.getRGB(x, y)) {
+                            throw new IllegalStateException(
+                                    "Coordinate labels were painted on unreadably small cells");
+                        }
+                    }
+                }
+            });
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while verifying coordinate labels", exception);
+        } catch (InvocationTargetException exception) {
+            throw new IllegalStateException("Coordinate label verification failed", exception.getCause());
+        }
     }
 
     private static double luminance(int rgb) {

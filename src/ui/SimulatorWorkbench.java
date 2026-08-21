@@ -82,6 +82,7 @@ public final class SimulatorWorkbench extends JFrame {
     private final JComboBox<String> playbackRate = new JComboBox<>(new String[]{"1×", "3×", "10×"});
     private final JCheckBox showPathToggle = new JCheckBox("路线图", false);
     private final JCheckBox showTrajectoryToggle = new JCheckBox("实际轨迹", true);
+    private final JCheckBox coordinateToggle = new JCheckBox("坐标", false);
     private final JSlider timelineSlider = new JSlider(0, 0, 0);
     private final JTextField timeInput = new JTextField("0", 10);
     private final JLabel frameValue = valueLabel();
@@ -171,6 +172,7 @@ public final class SimulatorWorkbench extends JFrame {
         playbackRate.setFocusable(false);
         showPathToggle.setFocusable(false);
         showTrajectoryToggle.setFocusable(false);
+        coordinateToggle.setFocusable(false);
         movementModeBox.setFocusable(false);
         checkpointTypeBox.setFocusable(false);
         diagonalToggle.setFocusable(false);
@@ -255,6 +257,11 @@ public final class SimulatorWorkbench extends JFrame {
         showTrajectoryToggle.setToolTipText("显示已生成帧的实际敌人轨迹");
         showTrajectoryToggle.addActionListener(event -> canvas.setShowTrajectory(showTrajectoryToggle.isSelected()));
         toolbar.add(showTrajectoryToggle);
+        coordinateToggle.setOpaque(false);
+        coordinateToggle.setForeground(VALUE);
+        coordinateToggle.setToolTipText("在每个格子右下角标注格子坐标");
+        coordinateToggle.addActionListener(event -> canvas.setShowCoordinates(coordinateToggle.isSelected()));
+        toolbar.add(coordinateToggle);
         toolbar.addSeparator(new Dimension(10, 1));
         JButton exportScenarioButton = iconButton("导出场景", "把当前地图与路线保存为可导入的文本文件");
         exportScenarioButton.addActionListener(event -> scenarioFiles.exportScenario());

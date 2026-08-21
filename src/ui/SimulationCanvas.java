@@ -35,6 +35,8 @@ public final class SimulationCanvas extends JComponent {
     private static final int HOVER_INVALIDATION_WIDTH = 520;
     private static final int HOVER_INVALIDATION_HEIGHT = 140;
     private static final long REJECTION_FLASH_MILLIS = 400L;
+    /** Cell coordinate labels need room; below this pixel size they are hidden. */
+    private static final int COORDINATE_LABEL_MIN_PIXELS = 20;
     private Color REJECTION = theme.rejection();
     private Color ENTITY = theme.entity();
     private Color CURSOR = theme.cursor();
@@ -71,6 +73,7 @@ public final class SimulationCanvas extends JComponent {
     private List<List<UiSnapshot>> trajectories = List.of();
     private boolean showPath;
     private boolean showTrajectory = true;
+    private boolean showCoordinates;
     private boolean browseMode;
     private UiCell lastDraggedCell;
     private Point mapPanStart;
@@ -205,6 +208,12 @@ public final class SimulationCanvas extends JComponent {
     public void setShowTrajectory(boolean value) {
         showTrajectory = value;
         refreshHoverSample();
+        repaint();
+    }
+
+    /** Toggles the per-cell "x,y" coordinate labels in each cell's bottom-right corner. */
+    public void setShowCoordinates(boolean value) {
+        showCoordinates = value;
         repaint();
     }
 
@@ -411,8 +420,26 @@ public final class SimulationCanvas extends JComponent {
                 drawTerrainDetail(canvas, terrain, left, top, size);
                 canvas.setColor(GRID_LINE);
                 canvas.drawRect(left, top, size, size);
+                if (showCoordinates) {
+                    drawCellCoordinate(canvas, x, y, left, top, size);
+                }
             }
         }
+    }
+
+    /** The "x,y" label sits in the cell's bottom-right corner, like map.ark-nights.com. */
+    private void drawCellCoordinate(Graphics2D canvas, int cellX, int cellY,
+                                    int left, int top, int size) {
+        if (size < COORDINATE_LABEL_MIN_PIXELS) {
+            return;
+        }
+        String text = cellX + "," + cellY;
+        canvas.setFont(new Font(Font.SANS_SERIF, Font.PLAIN,
+                Math.max(9, Math.min(14, size / 4))));
+        int inset = Math.max(2, size / 10);
+        canvas.setColor(theme.labelText());
+        int width = canvas.getFontMetrics().stringWidth(text);
+        canvas.drawString(text, left + size - inset - width, top + size - inset);
     }
 
     private void drawTerrainDetail(Graphics2D canvas, UiTerrain terrain, int left, int top, int size) {
