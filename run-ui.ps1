@@ -9,10 +9,10 @@ $sourceFiles = Get-ChildItem -Recurse -File src/main, src/ui -Filter *.java |
     ForEach-Object { $_.FullName }
 
 New-Item -ItemType Directory -Force out | Out-Null
-& javac --release 21 -encoding UTF-8 -d out $sourceFiles
+& javac --release 21 -encoding UTF-8 -cp "lib\flatlaf.jar" -d out $sourceFiles
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-& java '-Dfile.encoding=UTF-8' -cp out SimulatorUiMain $args
+& java '-Dfile.encoding=UTF-8' -cp "out;lib\flatlaf.jar" SimulatorUiMain $args
 exit $LASTEXITCODE

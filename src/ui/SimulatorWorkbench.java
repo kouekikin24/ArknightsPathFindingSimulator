@@ -60,7 +60,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Swing workbench. SimulationSession remains the only UI-to-core adapter. */
 public final class SimulatorWorkbench extends JFrame {
-    private UiTheme theme = loadTheme();
+    private String themePreference = themePreference();
+    private UiTheme theme = resolvedTheme();
     private Color WINDOW_BACKGROUND = theme.windowBackground();
     private Color PANEL_BACKGROUND = theme.panelBackground();
     private Color BORDER = theme.border();
@@ -179,7 +180,11 @@ public final class SimulatorWorkbench extends JFrame {
         camera.requestFit();
     });
     private final JButton themeToggleButton = ComponentIds.tag(
-            iconButton(theme == UiTheme.DARK ? "☀" : "☾", "切换夜间/日间模式"), "V4", "主题切换");
+            iconButton(switch (themePreference) {
+                case "system" -> "自";
+                case "dark" -> "☀";
+                default -> "☾";
+            }, "切换 跟随系统/白天/黑夜"), "V4", "主题切换");
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
@@ -193,7 +198,9 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setShowPath(false);
         canvas.setTheme(theme);
         mapScrollPane.getViewport().setBackground(theme.canvasBackground());
-        // Startup in dark mode: the L&F built the input controls light, so remap once.
+        // The panels were built with the light palette; recolor them exactly
+        // once when the resolved theme is dark. Controls styled by the L&F
+        // (FlatLaf already matches the theme) are untouched by this pass.
         if (theme == UiTheme.DARK) {
             recolor(getContentPane(), UiTheme.LIGHT);
         }
@@ -327,15 +334,7 @@ public final class SimulatorWorkbench extends JFrame {
         panel.add(zoomBar, BorderLayout.NORTH);
         mapScrollPane.setBorder(null);
         mapScrollPane.getViewport().setBackground(canvas.getBackground());
-        mapScrollPane.getViewport().addChangeListener(event -> {
-            // A pan scrolls by blitting; the canvas absorbs the residual shift.
-            Point translate = canvas.consumeCameraTranslate();
-            if (translate != null) {
-                mapScrollPane.getViewport().scrollRectToVisible(new Rectangle(
-                        translate.x, translate.y, 0, 0));
-            }
-            camera.update();
-        });
+        mapScrollPane.getViewport().addChangeListener(event -> camera.update());
         panel.add(mapScrollPane, BorderLayout.CENTER);
         return panel;
     }
@@ -1406,19 +1405,56 @@ public final class SimulatorWorkbench extends JFrame {
 
     // ----- theming -----------------------------------------------------------
 
-    private static UiTheme loadTheme() {
-        return "dark".equals(Preferences.userNodeForPackage(SimulatorWorkbench.class)
-                .get("theme", "light")) ? UiTheme.DARK : UiTheme.LIGHT;
+    /** Theme preference: "system" follows the OS, "light"/"dark" pin it. */
+    static String themePreference() {
+        return Preferences.userNodeForPackage(SimulatorWorkbench.class).get("theme", "system");
     }
 
-    private void saveTheme() {
-        Preferences.userNodeForPackage(SimulatorWorkbench.class)
-                .put("theme", theme == UiTheme.DARK ? "dark" : "light");
+    /** The theme the UI should start with, honoring the OS when set to system. */
+    static UiTheme resolvedTheme() {
+        return switch (themePreference()) {
+            case "dark" -> UiTheme.DARK;
+            case "light" -> UiTheme.LIGHT;
+            default -> systemPrefersDark() ? UiTheme.DARK : UiTheme.LIGHT;
+        };
     }
 
+    /** Windows exposes its app mode in the registry; other OSes read as light. */
+    private static boolean systemPrefersDark() {
+        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            return false;
+        }
+        try {
+            Process process = new ProcessBuilder("reg", "query",
+                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                    "/v", "AppsUseLightTheme").redirectErrorStream(true).start();
+            String output = new String(process.getInputStream().readAllBytes());
+            process.waitFor();
+            // AppsUseLightTheme 0 means dark, 1 means light; absent means light.
+            return output.contains("AppsUseLightTheme") && output.contains("0x0");
+        } catch (Exception failure) {
+            return false;
+        }
+    }
+
+    private void saveThemePreference() {
+        Preferences.userNodeForPackage(SimulatorWorkbench.class).put("theme", themePreference);
+    }
+
+    /** Cycles 跟随系统 → 白天 → 黑夜, re-theming chrome and canvas together. */
     private void toggleTheme() {
+        themePreference = switch (themePreference) {
+            case "system" -> "light";
+            case "light" -> "dark";
+            default -> "system";
+        };
         UiTheme previous = theme;
-        theme = theme == UiTheme.DARK ? UiTheme.LIGHT : UiTheme.DARK;
+        theme = switch (themePreference) {
+            case "dark" -> UiTheme.DARK;
+            case "light" -> UiTheme.LIGHT;
+            default -> systemPrefersDark() ? UiTheme.DARK : UiTheme.LIGHT;
+        };
+        switchLookAndFeel();
         WINDOW_BACKGROUND = theme.windowBackground();
         PANEL_BACKGROUND = theme.panelBackground();
         BORDER = theme.border();
@@ -1427,16 +1463,39 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setTheme(theme);
         mapScrollPane.getViewport().setBackground(theme.canvasBackground());
         recolor(getContentPane(), previous);
-        themeToggleButton.setText(theme == UiTheme.DARK ? "☀" : "☾");
-        saveTheme();
+        themeToggleButton.setText(switch (themePreference) {
+            case "system" -> "自";
+            case "dark" -> "☀";
+            default -> "☾";
+        });
+        themeToggleButton.setToolTipText(switch (themePreference) {
+            case "system" -> "跟随系统（点击切到白天）";
+            case "dark" -> "黑夜（点击切到跟随系统）";
+            default -> "白天（点击切到黑夜）";
+        });
+        saveThemePreference();
     }
 
-    /** Remaps chrome and input-control colors in place, keyed by the previous theme. */
+    private static void switchLookAndFeel() {
+        try {
+            if (resolvedTheme() == UiTheme.DARK) {
+                com.formdev.flatlaf.FlatDarkLaf.setup();
+            } else {
+                com.formdev.flatlaf.FlatLightLaf.setup();
+            }
+            for (java.awt.Window window : java.awt.Window.getWindows()) {
+                SwingUtilities.updateComponentTreeUI(window);
+            }
+        } catch (Throwable missingFlatLaf) {
+            // The L&F stays as-is; the canvas theme still switches.
+        }
+    }
+
+    /** Remaps the colors we set ourselves, exact-match only — no guessing. */
     private void recolor(Component component, UiTheme previous) {
-        boolean toDark = theme == UiTheme.DARK;
         if (component instanceof JComponent jc && !(component instanceof SimulationCanvas)) {
-            remapBackground(jc, previous, toDark);
-            remapForeground(jc, previous, toDark);
+            remapBackground(jc, previous);
+            remapForeground(jc, previous);
             remapBorder(jc, previous);
         }
         if (component instanceof Container container) {
@@ -1446,24 +1505,21 @@ public final class SimulatorWorkbench extends JFrame {
         }
     }
 
-    private void remapBackground(JComponent jc, UiTheme previous, boolean toDark) {
+    private void remapBackground(JComponent jc, UiTheme previous) {
         Color bg = jc.getBackground();
         if (bg == null) {
             return;
         }
-        boolean input = jc instanceof JTextField || jc instanceof JList || jc instanceof JComboBox;
         if (bg.equals(previous.windowBackground())) {
             jc.setBackground(theme.windowBackground());
         } else if (bg.equals(previous.panelBackground())) {
             jc.setBackground(theme.panelBackground());
-        } else if (toDark && luminance(bg) > 150) {
-            jc.setBackground(input ? theme.canvasBackground() : theme.panelBackground());
-        } else if (!toDark && luminance(bg) < 120) {
-            jc.setBackground(input ? Color.WHITE : UiTheme.LIGHT.panelBackground());
+        } else if (bg.equals(previous.canvasBackground())) {
+            jc.setBackground(theme.canvasBackground());
         }
     }
 
-    private void remapForeground(JComponent jc, UiTheme previous, boolean toDark) {
+    private void remapForeground(JComponent jc, UiTheme previous) {
         Color fg = jc.getForeground();
         if (fg == null) {
             return;
@@ -1472,15 +1528,7 @@ public final class SimulatorWorkbench extends JFrame {
             jc.setForeground(theme.valueText());
         } else if (fg.equals(previous.labelText())) {
             jc.setForeground(theme.labelText());
-        } else if (toDark && luminance(fg) < 120) {
-            jc.setForeground(theme.valueText());
-        } else if (!toDark && luminance(fg) > 150) {
-            jc.setForeground(UiTheme.LIGHT.valueText());
         }
-    }
-
-    private static double luminance(Color color) {
-        return 0.299 * color.getRed() + 0.587 * color.getGreen() + 0.114 * color.getBlue();
     }
 
     private void remapBorder(JComponent jc, UiTheme previous) {

@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.Locale;
 
 /** World-coordinate map renderer. Every drawing and hit test uses this camera. */
-public final class SimulationCanvas extends JComponent {
+public final class SimulationCanvas extends JComponent implements javax.swing.Scrollable {
     private static final int PADDING = 24;
     private static final double MIN_ZOOM = 0.1d;
     private static final double MAX_ZOOM_MULTIPLIER = 300d;
@@ -39,6 +39,8 @@ public final class SimulationCanvas extends JComponent {
     private static final long REJECTION_FLASH_MILLIS = 400L;
     /** Cell coordinate labels need room; below this pixel size they are hidden. */
     private static final int COORDINATE_LABEL_MIN_PIXELS = 20;
+    /** Extra pixels of offscreen coverage around the visible map region. */
+    private static final int STATIC_BUFFER_MARGIN = 96;
     private Color REJECTION = theme.rejection();
     private Color ENTITY = theme.entity();
     private Color CURSOR = theme.cursor();
@@ -89,8 +91,19 @@ public final class SimulationCanvas extends JComponent {
     private int viewportWidth = 1;
     private int viewportHeight = 1;
     private Point requestedViewPosition;
-    private int cameraTranslateX;
-    private int cameraTranslateY;
+    // Offscreen backing store for the static world (terrain, grid, labels,
+    // markers). Panning never rebuilds it: a repaint is one drawImage blit.
+    private java.awt.image.BufferedImage staticBuffer;
+    private Rectangle staticBufferBounds;
+    private int staticRebuildCount;
+    private List<UiTerrain> staticTerrain;
+    private UiPoint staticSpawn;
+    private UiPoint staticEndpoint;
+    private List<UiCheckpoint> staticCheckpoints;
+    private boolean staticMarkersAtFrameZero;
+    private double staticZoom = Double.NaN;
+    private UiTheme staticTheme;
+    private boolean staticShowCoordinates;
     private Runnable zoomChangeListener = () -> { };
 
     public SimulationCanvas(java.util.function.BiConsumer<UiCell, UiPoint> cellHandler) {
@@ -384,23 +397,6 @@ public final class SimulationCanvas extends JComponent {
         return new Point(worldToCanvasX(worldX), worldToCanvasY(worldY));
     }
 
-    /** Camera translation in canvas pixels: zoom and viewport size are untouched. */
-    public void translateCameraPixels(int deltaX, int deltaY) {
-        cameraTranslateX += deltaX;
-        cameraTranslateY += deltaY;
-    }
-
-    /** Applied on the EDT by the owning viewport so the next paint is offset. */
-    public Point consumeCameraTranslate() {
-        if (cameraTranslateX == 0 && cameraTranslateY == 0) {
-            return null;
-        }
-        Point delta = new Point(cameraTranslateX, cameraTranslateY);
-        cameraTranslateX = 0;
-        cameraTranslateY = 0;
-        return delta;
-    }
-
     @Override
     public AccessibleContext getAccessibleContext() {
         if (accessibleContext == null) {
@@ -426,17 +422,15 @@ public final class SimulationCanvas extends JComponent {
             if (snapshot == null) {
                 return;
             }
-            // A camera translation shifts all world content; strips uncovered
-            // by the shift stay background-colored so no doubled edge appears.
-            if (cameraTranslateX != 0 || cameraTranslateY != 0) {
-                canvas.clipRect(PADDING + Math.min(cameraTranslateX, 0),
-                        PADDING + Math.min(cameraTranslateY, 0),
-                        Math.max(0, (int) Math.ceil(snapshot.width() * zoom) + 1 - Math.abs(cameraTranslateX)),
-                        Math.max(0, (int) Math.ceil(snapshot.height() * zoom) + 1 - Math.abs(cameraTranslateY)));
-            }
             canvas.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             canvas.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
-            drawTerrain(canvas);
+            // Static world comes from the offscreen buffer: one blit per
+            // repaint, no matter how far the view has panned.
+            ensureStaticBuffer();
+            if (staticBuffer != null) {
+                canvas.drawImage(staticBuffer, staticBufferBounds.x, staticBufferBounds.y, null);
+            }
+            // Dynamic overlays stay vector: they change every playback frame.
             if (showTrajectory) {
                 drawTrajectory(canvas);
             }
@@ -444,7 +438,6 @@ public final class SimulationCanvas extends JComponent {
                 drawPathSegments(canvas);
                 drawNextNode(canvas);
             }
-            drawMarkers(canvas);
             drawUnit(canvas);
             drawRejectionFlash(canvas);
             drawHoverSampleMarker(canvas);
@@ -452,6 +445,114 @@ public final class SimulationCanvas extends JComponent {
         } finally {
             canvas.dispose();
         }
+    }
+
+    /**
+     * Keeps the static world buffer fresh and covering the visible region.
+     * A rebuild happens only when the scenario content, theme, zoom, or the
+     * label toggle changes — playback frames and pans never trigger one.
+     */
+    private void ensureStaticBuffer() {
+        boolean contentChanged = staticBuffer == null
+                || snapshot.terrain() != staticTerrain
+                || !snapshot.spawn().equals(staticSpawn)
+                || !snapshot.endpoint().equals(staticEndpoint)
+                || snapshot.checkpoints() != staticCheckpoints
+                || (snapshot.frame() == 0) != staticMarkersAtFrameZero
+                || zoom != staticZoom
+                || theme != staticTheme
+                || showCoordinates != staticShowCoordinates;
+        Rectangle visible = visibleCanvasRect();
+        if (contentChanged) {
+            renderStaticIntoBuffer(visible);
+            return;
+        }
+        if (!staticBufferBounds.contains(visible)) {
+            // Same content, newly exposed region: widen to a fresh window.
+            // Drags re-render at most one visible window per margin width.
+            renderStaticIntoBuffer(visible);
+        }
+    }
+
+    private void renderStaticIntoBuffer(Rectangle visible) {
+        Rectangle content = new Rectangle(contentSize());
+        Rectangle window = visible.intersection(content);
+        if (window.isEmpty()) {
+            staticBuffer = null;
+            staticBufferBounds = new Rectangle(0, 0, 0, 0);
+            snapshotStaticInputs();
+            return;
+        }
+        window.grow(STATIC_BUFFER_MARGIN, STATIC_BUFFER_MARGIN);
+        window = window.intersection(content);
+        java.awt.image.BufferedImage buffer = new java.awt.image.BufferedImage(
+                window.width, window.height, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = buffer.createGraphics();
+        try {
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+            g.translate(-window.x, -window.y);
+            g.setClip(window.x, window.y, window.width, window.height);
+            g.setColor(getBackground());
+            g.fillRect(window.x, window.y, window.width, window.height);
+            drawTerrain(g);
+            drawMarkers(g);
+        } finally {
+            g.dispose();
+        }
+        staticBuffer = buffer;
+        staticBufferBounds = window;
+        snapshotStaticInputs();
+        staticRebuildCount++;
+    }
+
+    private void snapshotStaticInputs() {
+        staticTerrain = snapshot.terrain();
+        staticSpawn = snapshot.spawn();
+        staticEndpoint = snapshot.endpoint();
+        staticCheckpoints = snapshot.checkpoints();
+        staticMarkersAtFrameZero = snapshot.frame() == 0;
+        staticZoom = zoom;
+        staticTheme = theme;
+        staticShowCoordinates = showCoordinates;
+    }
+
+    /** The canvas rectangle the viewport currently shows, or all of it when unparented. */
+    private Rectangle visibleCanvasRect() {
+        javax.swing.JViewport viewport = owningViewport();
+        if (viewport == null) {
+            return new Rectangle(0, 0, Math.max(1, getWidth()), Math.max(1, getHeight()));
+        }
+        Point position = viewport.getViewPosition();
+        Dimension extent = viewport.getExtentSize();
+        return new Rectangle(position.x, position.y,
+                Math.max(1, extent.width), Math.max(1, extent.height));
+    }
+
+    private Dimension contentSize() {
+        if (snapshot == null) {
+            return new Dimension(1, 1);
+        }
+        return new Dimension(PADDING * 2 + worldLengthToPixels(snapshot.width()),
+                PADDING * 2 + worldLengthToPixels(snapshot.height()));
+    }
+
+    /** Verify hook: a paint at any pan offset must not rebuild the static buffer. */
+    boolean verifyPanKeepsStaticBuffer() {
+        javax.swing.JViewport viewport = owningViewport();
+        if (viewport == null) {
+            return false;
+        }
+        staticRebuildCount = 0;
+        paintImmediately(0, 0, getWidth(), getHeight());
+        int afterFirstPaint = staticRebuildCount;
+        Point position = viewport.getViewPosition();
+        viewport.setViewPosition(new Point(position.x + 40, position.y + 25));
+        paintImmediately(0, 0, getWidth(), getHeight());
+        viewport.setViewPosition(position);
+        paintImmediately(0, 0, getWidth(), getHeight());
+        // One rebuild for the first paint (cold buffer); the pan paints reuse it.
+        return afterFirstPaint <= 1 && staticRebuildCount == afterFirstPaint;
     }
 
     private void drawTerrain(Graphics2D canvas) {
@@ -687,72 +788,9 @@ public final class SimulationCanvas extends JComponent {
         int deltaY = event.getY() - mapPanStart.y;
         int nextX = Math.max(0, Math.min(maxX, mapPanViewStart.x - deltaX));
         int nextY = Math.max(0, Math.min(maxY, mapPanViewStart.y - deltaY));
-        panViewportTo(viewport, nextX, nextY);
-    }
-
-    /**
-     * Scrolls by copying the already-painted pixels and repainting only the
-     * uncovered strip, with a camera offset absorbing the residual so the map
-     * stays glued to the cursor. The alternative — moving the view over a
-     * changed clip — repaints the whole visible map per drag event, which is
-     * the paused-state drag stutter.
-     */
-    private void panViewportTo(javax.swing.JViewport viewport, int nextX, int nextY) {
-        Point current = viewport.getViewPosition();
-        int dx = nextX - current.x;
-        int dy = nextY - current.y;
-        if (dx == 0 && dy == 0) {
-            return;
-        }
-        Dimension extent = viewport.getExtentSize();
-        int width = extent.width;
-        int height = extent.height;
-        Component view = viewport.getView();
-        if (width <= 0 || height <= 0 || view == null) {
-            viewport.setViewPosition(new Point(nextX, nextY));
-            return;
-        }
-        // Copy backwards when the source region must survive the overwrite.
-        // The viewport is opaque and fully painted, so a screen-space blit
-        // carries the already-drawn pixels; only the uncovered strips repaint.
-        int copyFromX = Math.max(dx, 0);
-        int copyFromY = Math.max(dy, 0);
-        int copyWidth = width - Math.abs(dx);
-        int copyHeight = height - Math.abs(dy);
-        if (copyWidth > 0 && copyHeight > 0) {
-            Graphics graphics = viewport.getGraphics();
-            if (graphics != null) {
-                graphics.copyArea(copyFromX, copyFromY, copyWidth, copyHeight, -dx, -dy);
-                graphics.dispose();
-            }
-        }
-        if (Math.abs(dx) < width) {
-            int stripX = dx > 0 ? width - dx : 0;
-            viewport.repaint(stripX, 0, Math.abs(dx), height);
-        }
-        if (Math.abs(dy) < height) {
-            int stripY = dy > 0 ? height - dy : 0;
-            int stripWidth = width - Math.abs(dx);
-            int stripLeft = dx > 0 ? 0 : Math.abs(dx);
-            viewport.repaint(stripLeft, stripY, stripWidth, Math.abs(dy));
-        }
-        translateCameraPixels(dx, dy);
+        // Plain scroll: the static buffer keeps the repaint to one blit, so
+        // no custom blit machinery is needed here.
         viewport.setViewPosition(new Point(nextX, nextY));
-    }
-
-    /** Verify hook: pans reuse the painted pixels instead of invalidating the canvas. */
-    boolean verifyPanBlitKeepsCanvasClean() {
-        javax.swing.JViewport viewport = owningViewport();
-        if (viewport == null) {
-            return false;
-        }
-        RepaintManager manager = RepaintManager.currentManager(this);
-        manager.markCompletelyClean(this);
-        panViewportTo(viewport, viewport.getViewPosition().x + 30,
-                viewport.getViewPosition().y + 18);
-        Rectangle dirty = manager.getDirtyRegion(this);
-        Point translate = consumeCameraTranslate();
-        return dirty.isEmpty() && translate != null && translate.x == 30 && translate.y == 18;
     }
 
     private void endMapPan() {
@@ -966,20 +1004,20 @@ public final class SimulationCanvas extends JComponent {
     }
 
     private int worldToCanvasX(double worldX) {
-        return Math.round((float) (PADDING + cameraTranslateX + worldX * zoom));
+        return Math.round((float) (PADDING + worldX * zoom));
     }
 
     private int worldToCanvasY(double worldY) {
         // The display origin is the bottom-left: world y grows upward on screen.
-        return Math.round((float) (PADDING + cameraTranslateY + (snapshot.height() - worldY) * zoom));
+        return Math.round((float) (PADDING + (snapshot.height() - worldY) * zoom));
     }
 
     private float worldToCanvasXFloat(float worldX) {
-        return (float) (PADDING + cameraTranslateX + worldX * zoom);
+        return (float) (PADDING + worldX * zoom);
     }
 
     private float worldToCanvasYFloat(float worldY) {
-        return (float) (PADDING + cameraTranslateY + (snapshot.height() - worldY) * zoom);
+        return (float) (PADDING + (snapshot.height() - worldY) * zoom);
     }
 
     private double canvasToWorldX(int canvasX) {
@@ -991,11 +1029,11 @@ public final class SimulationCanvas extends JComponent {
     }
 
     double worldXAtCanvas(double canvasX) {
-        return (canvasX - PADDING - cameraTranslateX) / zoom;
+        return (canvasX - PADDING) / zoom;
     }
 
     double worldYAtCanvas(double canvasY) {
-        return snapshot.height() - (canvasY - PADDING - cameraTranslateY) / zoom;
+        return snapshot.height() - (canvasY - PADDING) / zoom;
     }
 
     private int worldLengthToPixels(double worldLength) {
@@ -1009,6 +1047,34 @@ public final class SimulationCanvas extends JComponent {
         return Math.max(MIN_ZOOM, Math.min(maximumZoom(), value));
     }
 
+    // Scrollable: the viewport sizes the view from the preferred size and
+    // tracks it across zooms; increments stay pixel-based for smooth pans.
+    @Override
+    public Dimension getPreferredScrollableViewportSize() {
+        return getPreferredSize();
+    }
+
+    @Override
+    public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+        return Math.max(1, worldLengthToPixels(0.25d));
+    }
+
+    @Override
+    public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+        return Math.max(1, (orientation == javax.swing.SwingConstants.VERTICAL
+                ? visibleRect.height : visibleRect.width) - worldLengthToPixels(0.5d));
+    }
+
+    @Override
+    public boolean getScrollableTracksViewportWidth() {
+        return false;
+    }
+
+    @Override
+    public boolean getScrollableTracksViewportHeight() {
+        return false;
+    }
+
     private void updatePreferredSize() {
         if (snapshot == null) {
             return;
@@ -1018,6 +1084,15 @@ public final class SimulationCanvas extends JComponent {
         Dimension next = new Dimension(Math.max(1, width), Math.max(1, height));
         if (!next.equals(getPreferredSize())) {
             setPreferredSize(next);
+            // The viewport tracks the view size only while the view is valid;
+            // a zoomed canvas is already laid out, so revalidate alone leaves
+            // the view size stale. Push the new size directly.
+            javax.swing.JViewport viewport = owningViewport();
+            if (viewport != null) {
+                viewport.setViewSize(next);
+            } else {
+                setSize(next);
+            }
             revalidate();
         }
     }

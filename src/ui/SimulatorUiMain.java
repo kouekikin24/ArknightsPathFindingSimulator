@@ -38,7 +38,7 @@ public final class SimulatorUiMain {
             System.err.println("The desktop UI requires a graphical desktop session.");
             return;
         }
-        configureLookAndFeel();
+        configureLookAndFeel(SimulatorWorkbench.resolvedTheme());
         SwingUtilities.invokeLater(() -> new SimulatorWorkbench().setVisible(true));
     }
 
@@ -600,31 +600,8 @@ public final class SimulatorUiMain {
         }
     }
 
-    /**
-     * The pan camera offset shifts world-to-canvas math one-to-one and is
-     * consumed once by the viewport listener; Shift+click placement snaps to
-     * the cell center.
-     */
+    /** Shift+click placement snaps to the cell center; plain placement is exact. */
     private static void verifyPanCameraTranslate(UiSnapshot snapshot) {
-        SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
-        canvas.setSnapshot(snapshot);
-        canvas.setViewportSize(800, 560);
-        canvas.setZoom(canvas.fitZoom());
-        Point before = canvas.canvasPointForWorld(3.5d, 2.5d);
-        canvas.translateCameraPixels(40, -25);
-        Point shifted = canvas.canvasPointForWorld(3.5d, 2.5d);
-        if (shifted.x != before.x + 40 || shifted.y != before.y - 25) {
-            throw new IllegalStateException("Camera translate did not shift world-to-canvas math");
-        }
-        double worldX = canvas.worldXAtCanvas(shifted.x);
-        if (Math.abs(worldX - 3.5d) > 0.01d) {
-            throw new IllegalStateException("Camera translate broke the inverse mapping");
-        }
-        Point consumed = canvas.consumeCameraTranslate();
-        if (consumed == null || consumed.x != 40 || consumed.y != -25
-                || canvas.consumeCameraTranslate() != null) {
-            throw new IllegalStateException("Camera translate was not consumed exactly once");
-        }
         UiPoint snapped = SimulationCanvas.snapPointToCellCenter(true,
                 new UiCell(3, 2), new UiPoint(3.9f, 2.1f));
         if (snapped.x() != 3.5f || snapped.y() != 2.5f) {
@@ -637,7 +614,10 @@ public final class SimulatorUiMain {
         }
     }
 
-    /** A drag pan must not invalidate the canvas: the blit carries the pixels. */
+    /**
+     * A drag pan must not rebuild the static world buffer: the repaint is one
+     * offscreen blit, which is what makes paused dragging smooth.
+     */
     private static void verifyPanBlitKeepsCanvasClean(UiSnapshot snapshot) {
         SimulationCanvas canvas = new SimulationCanvas((cell, point) -> { });
         canvas.setSnapshot(snapshot);
@@ -650,12 +630,8 @@ public final class SimulatorUiMain {
         viewport.setExtentSize(new Dimension(300, 220));
         viewport.setViewSize(canvas.getPreferredSize());
         viewport.setViewPosition(new Point(200, 180));
-        if (!canvas.verifyPanBlitKeepsCanvasClean()) {
-            throw new IllegalStateException("A drag pan invalidated the whole canvas");
-        }
-        // The leftover translate was consumed by the hook; nothing else changes.
-        if (viewport.getViewPosition().x != 230 || viewport.getViewPosition().y != 198) {
-            throw new IllegalStateException("Pan did not move the view pixel-for-pixel");
+        if (!canvas.verifyPanKeepsStaticBuffer()) {
+            throw new IllegalStateException("A drag pan rebuilt the static world buffer");
         }
     }
 
@@ -1919,11 +1895,20 @@ public final class SimulatorUiMain {
         return false;
     }
 
-    private static void configureLookAndFeel() {
+    /** FlatLaf carries every chrome control; the workbench canvas keeps UiTheme. */
+    private static void configureLookAndFeel(UiTheme theme) {
         try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception ignored) {
-            // Swing's cross-platform look and feel is a valid fallback.
+            if (theme == UiTheme.DARK) {
+                com.formdev.flatlaf.FlatDarkLaf.setup();
+            } else {
+                com.formdev.flatlaf.FlatLightLaf.setup();
+            }
+        } catch (Throwable missingFlatLaf) {
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception ignored) {
+                // Swing's cross-platform look and feel is a valid fallback.
+            }
         }
     }
 }

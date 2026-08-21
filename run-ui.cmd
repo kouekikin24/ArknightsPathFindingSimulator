@@ -11,7 +11,7 @@ for /R src\ui %%f in (*.java) do (
     set "source=%%f"
     echo "!source:\=/!">>out\sources.txt
 )
-javac --release 21 -encoding UTF-8 -d out @out\sources.txt
+javac --release 21 -encoding UTF-8 -cp "lib\flatlaf.jar" -d out @out\sources.txt
 if errorlevel 1 exit /b %errorlevel%
-java -Dfile.encoding=UTF-8 -cp out SimulatorUiMain %*
+java -Dfile.encoding=UTF-8 -cp "out;lib\flatlaf.jar" SimulatorUiMain %*
 exit /b %errorlevel%

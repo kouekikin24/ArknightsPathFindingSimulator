@@ -27,14 +27,14 @@ public record UiTheme(
                     new Color(40, 148, 82), new Color(171, 96, 40)});
 
     public static final UiTheme DARK = new UiTheme(
-            new Color(24, 28, 26), new Color(33, 38, 36), new Color(60, 68, 64),
-            new Color(226, 233, 229), new Color(150, 161, 155),
-            new Color(20, 24, 22), new Color(48, 56, 52), new Color(96, 170, 144),
-            new Color(226, 108, 94), new Color(226, 84, 78),
+            new Color(43, 43, 43), new Color(49, 51, 53), new Color(76, 79, 82),
+            new Color(216, 216, 216), new Color(157, 169, 160),
+            new Color(30, 31, 34), new Color(58, 61, 65), new Color(79, 160, 140),
+            new Color(224, 101, 90), new Color(224, 84, 78),
             new Color(233, 122, 96), new Color(201, 211, 205), new Color(88, 180, 130),
             new Color(216, 108, 114), new Color(98, 162, 210),
-            new Color(30, 35, 33), new Color(152, 86, 68), new Color(180, 144, 54),
-            new Color(72, 84, 79),
+            new Color(38, 40, 43), new Color(138, 90, 68), new Color(169, 130, 74),
+            new Color(84, 88, 94),
             new Color[]{new Color(233, 122, 96), new Color(96, 158, 235),
                     new Color(96, 205, 122), new Color(222, 162, 84)},
             new Color[]{new Color(226, 108, 94), new Color(88, 132, 214),
