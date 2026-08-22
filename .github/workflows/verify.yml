@@ -24,11 +24,11 @@ jobs:
         run: |
           mkdir -p out
           find src/main src/ui src/test -name "*.java" > out/sources.txt
-          javac --release 21 -encoding UTF-8 -d out @out/sources.txt
+          javac --release 21 -encoding UTF-8 -cp "lib/flatlaf.jar" -d out @out/sources.txt
 
       - name: Run simulator regression tests
         shell: bash
-        run: java -Dfile.encoding=UTF-8 -cp out SimulatorTests
+        run: java -Dfile.encoding=UTF-8 -cp "out;lib/flatlaf.jar" SimulatorTests
 
   ui-verify:
     name: UI session verification (headless)
@@ -46,8 +46,8 @@ jobs:
         run: |
           mkdir -p out
           find src/main src/ui src/test -name "*.java" > out/sources.txt
-          javac --release 21 -encoding UTF-8 -d out @out/sources.txt
+          javac --release 21 -encoding UTF-8 -cp "lib/flatlaf.jar" -d out @out/sources.txt
 
       - name: Run UI session verification
         shell: bash
-        run: java -Dfile.encoding=UTF-8 -cp out SimulatorUiMain --verify
+        run: java -Dfile.encoding=UTF-8 -cp "out;lib/flatlaf.jar" SimulatorUiMain --verify
