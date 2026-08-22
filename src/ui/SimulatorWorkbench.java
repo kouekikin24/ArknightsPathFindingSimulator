@@ -139,19 +139,18 @@ public final class SimulatorWorkbench extends JFrame {
     private final JSpinner checkpointAreaSpinner = ComponentIds.tag(cappedEditor(
             integerSpinner(new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1)), 5),
             "C5", "检查点参数·区块");
-    private final JSpinner checkpointXSpinner = ComponentIds.tag(coordinateSpinner(), "C1", "检查点坐标 X");
-    private final JSpinner checkpointYSpinner = ComponentIds.tag(coordinateSpinner(), "C2", "检查点坐标 Y");
-    private final JSpinner spawnXSpinner = ComponentIds.tag(coordinateSpinner(), "S1", "起点 X");
-    private final JSpinner spawnYSpinner = ComponentIds.tag(coordinateSpinner(), "S2", "起点 Y");
-    private final JSpinner endpointXSpinner = ComponentIds.tag(coordinateSpinner(), "E1", "终点 X");
-    private final JSpinner endpointYSpinner = ComponentIds.tag(coordinateSpinner(), "E2", "终点 Y");
+    private final JSpinner checkpointXSpinner = ComponentIds.tag(coordinateSpinner(6), "C1", "检查点坐标 X");
+    private final JSpinner checkpointYSpinner = ComponentIds.tag(coordinateSpinner(6), "C2", "检查点坐标 Y");
+    private final JSpinner spawnXSpinner = ComponentIds.tag(coordinateSpinner(4), "S1", "起点 X");
+    private final JSpinner spawnYSpinner = ComponentIds.tag(coordinateSpinner(4), "S2", "起点 Y");
+    private final JSpinner endpointXSpinner = ComponentIds.tag(coordinateSpinner(4), "E1", "终点 X");
+    private final JSpinner endpointYSpinner = ComponentIds.tag(coordinateSpinner(4), "E2", "终点 Y");
     private final java.awt.CardLayout routePointEditorCards = new java.awt.CardLayout();
     private final JPanel routePointEditorSlot = new JPanel(routePointEditorCards);
-    private final JPanel spawnEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-    private final JPanel endpointEditorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
     private JLabel checkpointCoordLabel;
     private JPanel checkpointCoordPanel;
     private JScrollPane checkpointListScroll;
+    private JScrollPane sidebarScrollPane;
     private javax.swing.Timer checkpointFlashTimer;
     private final JButton addCheckpointButton = ComponentIds.tag(new JButton("添加"), "C7", "添加检查点");
     private final JSpinner stunSecondsSpinner = ComponentIds.tag(
@@ -180,11 +179,7 @@ public final class SimulatorWorkbench extends JFrame {
         camera.requestFit();
     });
     private final JButton themeToggleButton = ComponentIds.tag(
-            iconButton(switch (themePreference) {
-                case "system" -> "自";
-                case "dark" -> "☀";
-                default -> "☾";
-            }, "切换 跟随系统/白天/黑夜"), "V4", "主题切换");
+            iconButton(themeIcon(themePreference), themeTooltip(themePreference)), "V4", "主题切换");
 
     private EditorTool selectedTool = EditorTool.OPEN;
     private boolean refreshing;
@@ -375,7 +370,7 @@ public final class SimulatorWorkbench extends JFrame {
     }
 
     private JScrollPane createSidebar() {
-        JPanel content = verticalPanel();
+        JPanel content = new SidebarContentPanel();
         content.setOpaque(true);
         content.setBackground(WINDOW_BACKGROUND);
         content.add(createMapSection());
@@ -393,6 +388,7 @@ public final class SimulatorWorkbench extends JFrame {
         content.add(createRuntimeSection());
         JScrollPane scroll = new JScrollPane(content, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        sidebarScrollPane = scroll;
         scroll.setPreferredSize(new Dimension(280, 0));
         scroll.setMinimumSize(new Dimension(240, 0));
         scroll.setBorder(BorderFactory.createLineBorder(BORDER));
@@ -531,26 +527,15 @@ public final class SimulatorWorkbench extends JFrame {
         c.fill = GridBagConstraints.HORIZONTAL;
         section.add(tools, c);
         // The numeric editors live in one fixed CardLayout slot: the S/E
-        // tools swap their row in, every other tool shows an empty card, so
-        // the sidebar never reshapes around them.
-        spawnEditorRow.setOpaque(false);
-        spawnEditorRow.add(spawnXSpinner);
-        JLabel spawnComma = new JLabel(",");
-        spawnComma.setForeground(LABEL_TEXT);
-        spawnEditorRow.add(spawnComma);
-        spawnEditorRow.add(spawnYSpinner);
-        endpointEditorRow.setOpaque(false);
-        endpointEditorRow.add(endpointXSpinner);
-        JLabel endpointComma = new JLabel(",");
-        endpointComma.setForeground(LABEL_TEXT);
-        endpointEditorRow.add(endpointComma);
-        endpointEditorRow.add(endpointYSpinner);
+        // tools swap their card in, every other tool shows an empty card, so
+        // the sidebar never reshapes around them. X and Y stack as two
+        // full-width rows; side by side they would not fit the sidebar width.
         routePointEditorSlot.setOpaque(false);
         JPanel emptyCard = new JPanel();
         emptyCard.setOpaque(false);
         routePointEditorSlot.add(emptyCard, "none");
-        routePointEditorSlot.add(spawnEditorRow, "spawn");
-        routePointEditorSlot.add(endpointEditorRow, "endpoint");
+        routePointEditorSlot.add(coordinateEditorCard(spawnXSpinner, spawnYSpinner), "spawn");
+        routePointEditorSlot.add(coordinateEditorCard(endpointXSpinner, endpointYSpinner), "endpoint");
         addFormRow(section, c, 1, "起终点", routePointEditorSlot);
         addRoutePointCommit(spawnXSpinner, spawnYSpinner, true);
         addRoutePointCommit(endpointXSpinner, endpointYSpinner, false);
@@ -566,6 +551,34 @@ public final class SimulatorWorkbench extends JFrame {
             default -> "none";
         };
         routePointEditorCards.show(routePointEditorSlot, card);
+    }
+
+    /** One route-point editor card: X and Y as full-width stacked form rows. */
+    private JPanel coordinateEditorCard(JSpinner xSpinner, JSpinner ySpinner) {
+        JPanel card = new JPanel(new GridBagLayout());
+        card.setOpaque(false);
+        GridBagConstraints c = baseConstraints();
+        c.gridx = 0;
+        c.weightx = 0d;
+        c.gridy = 0;
+        card.add(plainLabel("X"), c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        card.add(xSpinner, c);
+        c.gridx = 0;
+        c.gridy = 1;
+        c.weightx = 0d;
+        card.add(plainLabel("Y"), c);
+        c.gridx = 1;
+        c.weightx = 1d;
+        card.add(ySpinner, c);
+        return card;
+    }
+
+    private JLabel plainLabel(String text) {
+        JLabel label = new JLabel(text);
+        label.setForeground(LABEL_TEXT);
+        return label;
     }
 
     /** Spinners commit exact decimal coordinates; canvas clicks snap to cell centers. */
@@ -647,8 +660,10 @@ public final class SimulatorWorkbench extends JFrame {
                 operationStatus.setText("无法击退：" + error.getMessage());
             }
         });
-        addCombatRow(section, 1, "击退", pushXSpinner, pushYSpinner, pushSecondsSpinner,
-                new JLabel("秒"), pushButton);
+        // The row is split so three spinners never widen the sidebar: the
+        // velocities sit next to 击退, the duration with its button below.
+        addCombatRow(section, 1, "击退", pushXSpinner, pushYSpinner);
+        addCombatRow(section, 2, "持续", pushSecondsSpinner, new JLabel("秒"), pushButton);
 
         bindToggle.setToolTipText("束缚期间单位不移动（下一帧起生效）");
         bindToggle.addActionListener(event -> {
@@ -666,7 +681,7 @@ public final class SimulatorWorkbench extends JFrame {
             // stays pressed; a rejected injection rolls the toggle back.
             refresh(session.snapshotFrame());
         });
-        addCombatRow(section, 2, "束缚", bindToggle);
+        addCombatRow(section, 3, "束缚", bindToggle);
         return section;
     }
 
@@ -745,6 +760,12 @@ public final class SimulatorWorkbench extends JFrame {
 
         checkpointList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         checkpointList.setVisibleRowCount(5);
+        // The list must not dictate the sidebar width: a wide coordinate row
+        // would grow the section past the viewport. The prototype fixes the
+        // preferred width at a full-size entry (max map coordinate).
+        checkpointList.setPrototypeCellValue(UiFormat.checkpointRow(98,
+                new UiCheckpoint(UiCheckpointType.APPEAR_AT_POS, new UiPoint(512f, 512f), 0f, 0),
+                false));
         // Selecting a checkpoint echoes its type and parameters into the panel,
         // so 更新 never overwrites with stale spinner values.
         checkpointList.addListSelectionListener(event -> {
@@ -1157,13 +1178,44 @@ public final class SimulatorWorkbench extends JFrame {
         return spinner.getModel() instanceof SpinnerNumberModel model && model.getNextValue() != null;
     }
 
-    /** Verify hook: huge spinner maxima must not widen the editors and clip the sidebar. */
+    /**
+     * Verify hook: the sidebar content must fit the viewport width it is
+     * actually given. The old check only measured single spinners and missed
+     * whole rows overflowing the fixed-width, no-hscroll sidebar.
+     */
     boolean verifySidebarFits() {
-        return speedSpinner.getPreferredSize().width < 120
-                && checkpointSecondsSpinner.getPreferredSize().width < 120
-                && checkpointAreaSpinner.getPreferredSize().width < 120
-                && checkpointXSpinner.getPreferredSize().width < 120
-                && spawnXSpinner.getPreferredSize().width < 120;
+        if (sidebarScrollPane == null) {
+            return false;
+        }
+        Component view = sidebarScrollPane.getViewport().getView();
+        int available = sidebarScrollPane.getViewport().getWidth();
+        return available > 0 && view.getPreferredSize().width <= available;
+    }
+
+    /**
+     * Verify hook: after every theme toggle the L&F-installed control colors
+     * and our explicit chrome colors must agree with the resolved theme. The
+     * L&F used to lag one preference-save behind and mix light with dark.
+     */
+    boolean verifyThemeToggleConsistency() {
+        for (int i = 0; i < 3; i++) {
+            themeToggleButton.doClick();
+            boolean dark = theme == UiTheme.DARK;
+            if (dark == isLightColor(checkpointList.getBackground())) {
+                return false;
+            }
+            if (dark == isLightColor(addCheckpointButton.getBackground())) {
+                return false;
+            }
+            if (!getContentPane().getBackground().equals(theme.windowBackground())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isLightColor(Color color) {
+        return color.getRed() + color.getGreen() + color.getBlue() > 384;
     }
 
     /** Screenshot-driver hook: advance one frame and repaint. */
@@ -1230,29 +1282,32 @@ public final class SimulatorWorkbench extends JFrame {
         try {
             selectedTool = EditorTool.OPEN;
             updateRoutePointEditorVisibility();
-            if (visibleRoutePointCard() != null) {
+            if (visibleRoutePointCardSpinner() != null) {
                 return false;
             }
             selectedTool = EditorTool.SPAWN;
             updateRoutePointEditorVisibility();
-            if (visibleRoutePointCard() != spawnEditorRow) {
+            if (visibleRoutePointCardSpinner() != spawnXSpinner) {
                 return false;
             }
             selectedTool = EditorTool.ENDPOINT;
             updateRoutePointEditorVisibility();
-            return visibleRoutePointCard() == endpointEditorRow;
+            return visibleRoutePointCardSpinner() == endpointXSpinner;
         } finally {
             selectedTool = previousTool;
             updateRoutePointEditorVisibility();
         }
     }
 
-    /** The row the CardLayout currently shows, or null for the empty card. */
-    private JPanel visibleRoutePointCard() {
+    /** The X spinner of the card the CardLayout shows, or null for the empty card. */
+    private JSpinner visibleRoutePointCardSpinner() {
         for (Component component : routePointEditorSlot.getComponents()) {
-            if (component.isVisible()) {
-                return component == spawnEditorRow || component == endpointEditorRow
-                        ? (JPanel) component : null;
+            if (component.isVisible() && component instanceof JPanel card) {
+                for (Component child : card.getComponents()) {
+                    if (child instanceof JSpinner spinner) {
+                        return spinner;
+                    }
+                }
             }
         }
         return null;
@@ -1454,7 +1509,7 @@ public final class SimulatorWorkbench extends JFrame {
             case "light" -> UiTheme.LIGHT;
             default -> systemPrefersDark() ? UiTheme.DARK : UiTheme.LIGHT;
         };
-        switchLookAndFeel();
+        switchLookAndFeel(theme);
         WINDOW_BACKGROUND = theme.windowBackground();
         PANEL_BACKGROUND = theme.panelBackground();
         BORDER = theme.border();
@@ -1463,22 +1518,35 @@ public final class SimulatorWorkbench extends JFrame {
         canvas.setTheme(theme);
         mapScrollPane.getViewport().setBackground(theme.canvasBackground());
         recolor(getContentPane(), previous);
-        themeToggleButton.setText(switch (themePreference) {
-            case "system" -> "自";
-            case "dark" -> "☀";
-            default -> "☾";
-        });
-        themeToggleButton.setToolTipText(switch (themePreference) {
-            case "system" -> "跟随系统（点击切到白天）";
-            case "dark" -> "黑夜（点击切到跟随系统）";
-            default -> "白天（点击切到黑夜）";
-        });
+        themeToggleButton.setText(themeIcon(themePreference));
+        themeToggleButton.setToolTipText(themeTooltip(themePreference));
         saveThemePreference();
     }
 
-    private static void switchLookAndFeel() {
+    private static String themeIcon(String preference) {
+        return switch (preference) {
+            case "system" -> "自";
+            case "dark" -> "☀";
+            default -> "☾";
+        };
+    }
+
+    private static String themeTooltip(String preference) {
+        return switch (preference) {
+            case "system" -> "跟随系统（点击切到白天）";
+            case "dark" -> "黑夜（点击切到跟随系统）";
+            default -> "白天（点击切到黑夜）";
+        };
+    }
+
+    /**
+     * Installs the FlatLaf variant for the theme we just resolved. Reading the
+     * preference store here instead would lag one toggle behind, because the
+     * new preference is only saved after the repaint.
+     */
+    private static void switchLookAndFeel(UiTheme target) {
         try {
-            if (resolvedTheme() == UiTheme.DARK) {
+            if (target == UiTheme.DARK) {
                 com.formdev.flatlaf.FlatDarkLaf.setup();
             } else {
                 com.formdev.flatlaf.FlatLightLaf.setup();
@@ -1771,6 +1839,43 @@ public final class SimulatorWorkbench extends JFrame {
         return panel;
     }
 
+    /**
+     * Sidebar stack that always matches the viewport width. Without this the
+     * viewport hands the panel its preferred width, and with the horizontal
+     * scrollbar disabled anything wider is silently clipped on the right.
+     */
+    private static final class SidebarContentPanel extends JPanel implements javax.swing.Scrollable {
+        SidebarContentPanel() {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            setOpaque(false);
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return 16;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return Math.max(16, visibleRect.height - 16);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
+
     private JPanel section(String title) {
         JPanel panel = new JPanel();
         panel.setBackground(PANEL_BACKGROUND);
@@ -1875,11 +1980,15 @@ public final class SimulatorWorkbench extends JFrame {
         return cappedEditor(spinner, 2);
     }
 
-    /** Coordinate editors: 4-decimal display, typed values within range commit as-is. */
-    private static JSpinner coordinateSpinner() {
-        // Six columns: "1.2222" must stay fully visible while editing.
+    /**
+     * Coordinate editors: 4-decimal display, typed values within range commit
+     * as-is. Checkpoints get six columns ("1.2222" stays fully visible while
+     * editing); the route-point editors take four because their rows share the
+     * width with the section's label column.
+     */
+    private static JSpinner coordinateSpinner(int columns) {
         return cappedEditor(decimalSpinner(new SpinnerNumberModel(0.5d, 0.0d,
-                (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), 6);
+                (double) ScenarioCodec.MAXIMUM_DIMENSION, 0.1d)), columns);
     }
 
     /**

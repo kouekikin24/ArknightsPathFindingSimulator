@@ -285,6 +285,10 @@ public final class SimulatorUiMain {
                     throw new IllegalStateException(
                             "A wide spinner maximum clipped the sidebar horizontally");
                 }
+                if (!workbench.verifyThemeToggleConsistency()) {
+                    throw new IllegalStateException(
+                            "Toggling the theme left controls and chrome in different themes");
+                }
                 if (!workbench.verifyCheckpointSelectionSurvivesRefresh()) {
                     throw new IllegalStateException(
                             "A playback refresh stole the checkpoint list selection");
